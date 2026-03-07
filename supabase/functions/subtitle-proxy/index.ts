@@ -129,6 +129,32 @@ const LANGUAGE_ALIASES: Record<string, string> = {
   uk: "uk",
 };
 
+const ISO6391_TO_SUBSOURCE_LANGUAGE: Record<string, string> = {
+  en: "english",
+  id: "indonesian",
+  es: "spanish",
+  fr: "french",
+  de: "german",
+  it: "italian",
+  pt: "portuguese",
+  ru: "russian",
+  ar: "arabic",
+  tr: "turkish",
+  ja: "japanese",
+  ko: "korean",
+  zh: "chinese",
+  vi: "vietnamese",
+  th: "thai",
+  nl: "dutch",
+  pl: "polish",
+  ro: "romanian",
+  fa: "persian",
+  hi: "hindi",
+  ms: "malay",
+  tl: "tagalog",
+  uk: "ukrainian",
+};
+
 function jsonResponse(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), {
     status,
@@ -177,6 +203,36 @@ function preferredLanguageCodes(input: unknown): string[] {
   }
 
   for (const fallback of ["en", "id"]) {
+    if (!values.includes(fallback)) values.push(fallback);
+  }
+
+  return values.slice(0, 3);
+}
+
+function normalizeSubsourceLanguage(input: unknown): string | null {
+  const code = normalizeLanguageCode(input);
+  if (code === "unknown") {
+    return null;
+  }
+
+  return ISO6391_TO_SUBSOURCE_LANGUAGE[code] ?? code;
+}
+
+function preferredSubsourceLanguages(input: unknown): string[] {
+  const values: string[] = [];
+  if (Array.isArray(input)) {
+    for (const item of input) {
+      const language = normalizeSubsourceLanguage(item);
+      if (!language) continue;
+      if (!values.includes(language)) values.push(language);
+    }
+  }
+
+  if (values.length === 0) {
+    values.push("english", "indonesian");
+  }
+
+  for (const fallback of ["english", "indonesian"]) {
     if (!values.includes(fallback)) values.push(fallback);
   }
 
@@ -504,6 +560,7 @@ Deno.serve(async (req: Request) => {
 
   const sources = normalizeSources(body.sources);
   const languageCodes = preferredLanguageCodes(body.preferred_languages);
+  const subsourceLanguages = preferredSubsourceLanguages(body.preferred_languages);
 
   const subtitles: ProxySubtitle[] = [];
   const errors: SourceError[] = [];
@@ -528,7 +585,7 @@ Deno.serve(async (req: Request) => {
       continue;
     }
 
-    const fetched = await fetchSubsource(videoId, contentType, languageCodes);
+    const fetched = await fetchSubsource(videoId, contentType, subsourceLanguages);
     subtitles.push(...fetched.subtitles);
     if (fetched.error) {
       errors.push({ source, message: fetched.error });
@@ -544,6 +601,7 @@ Deno.serve(async (req: Request) => {
       content_type: contentType,
       sources,
       preferred_languages: languageCodes,
+      subsource_languages: subsourceLanguages,
       subtitle_count: deduped.length,
     },
   });

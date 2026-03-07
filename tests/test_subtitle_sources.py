@@ -5,6 +5,7 @@ from moviebox_api.stremio.subtitle_sources import (
     ExternalSubtitle,
     _normalise_language_code,
     _preferred_language_codes,
+    _preferred_subsource_languages,
     fetch_external_subtitles,
     subtitle_proxy_url,
     subtitle_source_is_configured,
@@ -32,6 +33,11 @@ def test_preferred_language_codes_respects_language_aliases():
 
 def test_preferred_language_codes_appends_fallback_languages():
     assert _preferred_language_codes(["indonesian"]) == ["id", "en"]
+
+
+def test_preferred_subsource_languages_use_names_and_fallbacks():
+    assert _preferred_subsource_languages(["id"]) == ["indonesian", "english"]
+    assert _preferred_subsource_languages(["english", "indonesian"]) == ["english", "indonesian"]
 
 
 def test_subtitle_proxy_url_uses_default_proxy_when_not_disabled(

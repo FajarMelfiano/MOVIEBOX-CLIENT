@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 
-from moviebox_api.language import normalize_language_id, to_iso639_1
+from moviebox_api.language import language_display_name, normalize_language_id, to_iso639_1
 from moviebox_api.security.secrets import get_secret
 
 SUBDL_API_KEY_ENV = "MOVIEBOX_SUBDL_API_KEY"
@@ -76,6 +76,44 @@ def _preferred_language_codes(preferred_languages: list[str] | None) -> list[str
         return ["en", "id"]
 
     for fallback in ("en", "id"):
+        if fallback not in values:
+            values.append(fallback)
+
+    return values[:3]
+
+
+def _normalise_subsource_language(language: str | None) -> str | None:
+    canonical = normalize_language_id(language)
+    if canonical == "unknown":
+        return None
+
+    display = language_display_name(canonical).strip().lower()
+    if display and display != "unknown":
+        return display
+
+    iso639_1 = to_iso639_1(canonical)
+    if iso639_1:
+        return iso639_1
+
+    return canonical
+
+
+def _preferred_subsource_languages(preferred_languages: list[str] | None) -> list[str]:
+    if not preferred_languages:
+        return ["english", "indonesian"]
+
+    values: list[str] = []
+    for language in preferred_languages:
+        normalized = _normalise_subsource_language(language)
+        if not normalized:
+            continue
+        if normalized not in values:
+            values.append(normalized)
+
+    if not values:
+        return ["english", "indonesian"]
+
+    for fallback in ("english", "indonesian"):
         if fallback not in values:
             values.append(fallback)
 
@@ -354,7 +392,7 @@ async def _fetch_subsource(
     if is_key_valid is False:
         raise RuntimeError("SubSource API key is invalid or expired")
 
-    language_codes = _preferred_language_codes(preferred_languages)
+    language_codes = _preferred_subsource_languages(preferred_languages)
     config_path = _build_subsource_config_path(api_key, language_codes)
     url = f"{_SUBSOURCE_BASE_URL}/{config_path}/subtitles/{content_type}/{video_id}.json"
 
