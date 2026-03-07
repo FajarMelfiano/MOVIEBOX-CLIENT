@@ -18,7 +18,7 @@ Unofficial Python client for searching, streaming, and downloading movies or TV 
 ### Linux / macOS
 
 ```bash
-https://github.com/FajarMelfiano/MOVIEBOX-CLIENT
+git clone https://github.com/FajarMelfiano/MOVIEBOX-CLIENT
 cd moviebox-api
 chmod +x install.sh
 ./install.sh
@@ -27,7 +27,7 @@ chmod +x install.sh
 ### Windows (PowerShell)
 
 ```powershell
-https://github.com/FajarMelfiano/MOVIEBOX-CLIENT
+git clone https://github.com/FajarMelfiano/MOVIEBOX-CLIENT
 cd moviebox-api
 .\install.ps1
 ```
@@ -35,7 +35,7 @@ cd moviebox-api
 ### Windows (CMD)
 
 ```cmd
-https://github.com/FajarMelfiano/MOVIEBOX-CLIENT
+git clone https://github.com/FajarMelfiano/MOVIEBOX-CLIENT
 cd moviebox-api
 install.bat
 ```
@@ -44,7 +44,7 @@ install.bat
 
 ```bash
 pkg install git -y
-https://github.com/FajarMelfiano/MOVIEBOX-CLIENT
+git clone https://github.com/FajarMelfiano/MOVIEBOX-CLIENT
 cd moviebox-api
 chmod +x install-termux.sh
 ./install-termux.sh
