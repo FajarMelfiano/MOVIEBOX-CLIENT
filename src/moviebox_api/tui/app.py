@@ -136,34 +136,32 @@ class ContinuePromptScreen(ModalScreen[bool]):
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         if self._busy:
             return
-        self._busy = True
+        event.stop()
 
         continue_selected = event.button.id == "continue_yes_button"
-        self._set_busy_state(continue_selected)
+        self._busy = True
+        self.query_one("#continue_yes_button", Button).disabled = True
+        self.query_one("#continue_stop_button", Button).disabled = True
+
+        if continue_selected:
+            self._set_continue_busy_state()
+            try:
+                result = await self._on_continue()
+            except Exception:
+                result = False
+            self.dismiss(bool(result))
+            return
 
         try:
-            if continue_selected:
-                result = await self._on_continue()
-            else:
-                result = await self._on_stop()
+            result = await self._on_stop()
         except Exception:
             result = False
 
         self.dismiss(bool(result))
 
-    def _set_busy_state(self, continue_selected: bool) -> None:
-        self.query_one("#continue_yes_button", Button).disabled = True
-        self.query_one("#continue_stop_button", Button).disabled = True
-
-        if continue_selected:
-            self.query_one("#continue_prompt_message", Static).update("Preparing next episode...")
-            self.query_one("#continue_prompt_loading_label", Static).update(
-                "Loading streams and subtitles..."
-            )
-        else:
-            self.query_one("#continue_prompt_message", Static).update("Stopping...")
-            self.query_one("#continue_prompt_loading_label", Static).update("Applying your choice...")
-
+    def _set_continue_busy_state(self) -> None:
+        self.query_one("#continue_prompt_message", Static).update("Preparing next episode...")
+        self.query_one("#continue_prompt_loading_label", Static).update("Loading streams and subtitles...")
         self.query_one("#continue_prompt_loading_row").remove_class("hidden")
 
 
@@ -1840,7 +1838,8 @@ class InteractiveTextualApp(App[None]):
             )
             return bool(answer)
         except Exception:
-            return default_continue
+            self._set_status("Unable to show next-episode prompt. Auto-continue cancelled.")
+            return False
 
     async def _prepare_next_episode_from_current(self, current_stream, *, auto_start: bool) -> bool:
         if not self._advance_episode_selector():

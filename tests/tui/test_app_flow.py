@@ -6,7 +6,7 @@ from textual.widgets import ContentSwitcher, DataTable, Input, Select, Static
 
 from moviebox_api.constants import SubjectType
 from moviebox_api.stremio.catalog import StremioSearchItem
-from moviebox_api.tui.app import InteractiveTextualApp, SubtitleChoice
+from moviebox_api.tui.app import ContinuePromptScreen, InteractiveTextualApp, SubtitleChoice
 
 
 @pytest.mark.asyncio
@@ -160,6 +160,56 @@ async def test_tv_execute_stops_when_user_declines_next_episode(monkeypatch: pyt
 
         await app._handle_execute()
         assert app.query_one("#episode_select", Select).value == "1"
+
+
+@pytest.mark.asyncio
+async def test_continue_prompt_stop_dismisses_without_continue_callback():
+    app = InteractiveTextualApp()
+    callback_calls: list[str] = []
+    dismiss_results: list[bool] = []
+
+    async def _on_continue() -> bool:
+        callback_calls.append("continue")
+        return True
+
+    async def _on_stop() -> bool:
+        callback_calls.append("stop")
+        return False
+
+    async with app.run_test() as pilot:
+        await app.push_screen(
+            ContinuePromptScreen(
+                "Continue to next episode?",
+                on_continue=_on_continue,
+                on_stop=_on_stop,
+            ),
+            callback=lambda result: dismiss_results.append(bool(result)),
+        )
+        await pilot.click("#continue_stop_button")
+        await pilot.pause()
+
+        assert dismiss_results == [False]
+        assert callback_calls == ["stop"]
+
+
+@pytest.mark.asyncio
+async def test_confirm_continue_cancels_when_prompt_raises(monkeypatch: pytest.MonkeyPatch):
+    app = InteractiveTextualApp()
+
+    monkeypatch.setattr(app, "_read_season_episode", lambda: (1, 1))
+
+    captured_status: list[str] = []
+    monkeypatch.setattr(app, "_set_status", lambda message: captured_status.append(message))
+
+    async def _raise_prompt(*_args, **_kwargs):
+        raise RuntimeError("prompt failure")
+
+    monkeypatch.setattr(app, "push_screen_wait", _raise_prompt)
+
+    result = await app._confirm_continue_next_episode(default_continue=True)
+
+    assert result is False
+    assert any("Auto-continue cancelled" in message for message in captured_status)
 
 
 @pytest.mark.asyncio
