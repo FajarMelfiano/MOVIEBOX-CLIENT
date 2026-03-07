@@ -28,8 +28,8 @@ _DEFAULT_HEADERS = {
     "Accept-Language": "en-US,en;q=0.5",
 }
 
-_SUBDL_KEY_VALIDATION_CACHE: dict[str, bool] = {}
-_SUBSOURCE_KEY_VALIDATION_CACHE: dict[str, bool] = {}
+_SUBDL_KEY_VALIDATION_CACHE: dict[str, bool | None] = {}
+_SUBSOURCE_KEY_VALIDATION_CACHE: dict[str, bool | None] = {}
 
 
 @dataclass(slots=True)
@@ -156,7 +156,8 @@ async def _fetch_subdl(
     if not api_key:
         return []
 
-    if not await _is_subdl_api_key_valid(api_key):
+    is_key_valid = await _is_subdl_api_key_valid(api_key)
+    if is_key_valid is False:
         raise RuntimeError("SubDL API key is invalid or expired")
 
     language_codes = _preferred_language_codes(preferred_languages)
@@ -181,10 +182,16 @@ async def _fetch_subdl(
             continue
         mapped.append(subtitle)
 
+    if not mapped and is_key_valid is None:
+        raise RuntimeError(
+            "SubDL returned no subtitles and key validation could not be verified. "
+            "Check network access to api.subdl.com or use a fresh API key."
+        )
+
     return mapped
 
 
-async def _is_subdl_api_key_valid(api_key: str) -> bool:
+async def _is_subdl_api_key_valid(api_key: str) -> bool | None:
     cached = _SUBDL_KEY_VALIDATION_CACHE.get(api_key)
     if cached is not None:
         return cached
@@ -204,8 +211,7 @@ async def _is_subdl_api_key_valid(api_key: str) -> bool:
             payload = response.json()
             is_valid = bool(isinstance(payload, dict) and payload.get("status") is True)
     except Exception:
-        # Do not hard-fail on temporary network issues.
-        is_valid = True
+        is_valid = None
 
     _SUBDL_KEY_VALIDATION_CACHE[api_key] = is_valid
     return is_valid
@@ -220,7 +226,8 @@ async def _fetch_subsource(
     if not api_key:
         return []
 
-    if not await _is_subsource_api_key_valid(api_key):
+    is_key_valid = await _is_subsource_api_key_valid(api_key)
+    if is_key_valid is False:
         raise RuntimeError("SubSource API key is invalid or expired")
 
     language_codes = _preferred_language_codes(preferred_languages)
@@ -245,10 +252,16 @@ async def _fetch_subsource(
             continue
         mapped.append(subtitle)
 
+    if not mapped and is_key_valid is None:
+        raise RuntimeError(
+            "SubSource returned no subtitles and key validation could not be verified. "
+            "Check network access to subsource.strem.top or refresh API key."
+        )
+
     return mapped
 
 
-async def _is_subsource_api_key_valid(api_key: str) -> bool:
+async def _is_subsource_api_key_valid(api_key: str) -> bool | None:
     cached = _SUBSOURCE_KEY_VALIDATION_CACHE.get(api_key)
     if cached is not None:
         return cached
@@ -265,8 +278,7 @@ async def _is_subsource_api_key_valid(api_key: str) -> bool:
             payload = response.json()
             is_valid = bool(isinstance(payload, dict) and payload.get("valid") is True)
     except Exception:
-        # Do not hard-fail on temporary network/endpoint issues.
-        is_valid = True
+        is_valid = None
 
     _SUBSOURCE_KEY_VALIDATION_CACHE[api_key] = is_valid
     return is_valid
