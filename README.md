@@ -28,7 +28,7 @@ chmod +x install.sh
 
 ```powershell
 git clone https://github.com/FajarMelfiano/MOVIEBOX-CLIENT
-cd moviebox-api
+cd MOVIEBOX-CLIENT
 .\install.ps1
 ```
 
@@ -36,7 +36,7 @@ cd moviebox-api
 
 ```cmd
 git clone https://github.com/FajarMelfiano/MOVIEBOX-CLIENT
-cd moviebox-api
+cd MOVIEBOX-CLIENT
 install.bat
 ```
 
@@ -45,7 +45,7 @@ install.bat
 ```bash
 pkg install git -y
 git clone https://github.com/FajarMelfiano/MOVIEBOX-CLIENT
-cd moviebox-api
+cd MOVIEBOX-CLIENT
 chmod +x install-termux.sh
 ./install-termux.sh
 ```
