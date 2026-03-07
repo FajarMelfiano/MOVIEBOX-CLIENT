@@ -44,7 +44,7 @@ install.bat
 
 ```bash
 pkg install git -y
-git clone https://github.com/orionbyte-85/moviebox-api.git
+https://github.com/FajarMelfiano/MOVIEBOX-CLIENT
 cd moviebox-api
 chmod +x install-termux.sh
 ./install-termux.sh
