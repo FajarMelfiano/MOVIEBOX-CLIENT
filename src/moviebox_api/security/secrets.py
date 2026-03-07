@@ -1,4 +1,4 @@
-"""Secret storage helpers with environment + keyring backends.
+"""Secret storage helpers with environment + local backends.
 
 Layer A security model:
 - Environment variables still work for compatibility.
@@ -7,8 +7,9 @@ Layer A security model:
 
 from __future__ import annotations
 
+import json
 import os
-from typing import Any
+from pathlib import Path
 
 SERVICE_NAME = "moviebox-api"
 SUPPORTED_SECRET_NAMES = (
@@ -20,6 +21,8 @@ try:  # pragma: no cover - backend availability depends on runtime environment
     import keyring as _keyring
 except Exception:  # pragma: no cover
     _keyring = None
+
+_SECRETS_FILE_PATH = Path.home() / ".config" / "moviebox" / "secrets.json"
 
 
 def normalize_secret_name(name: str) -> str:
@@ -34,6 +37,63 @@ def keyring_available() -> bool:
     return _keyring is not None
 
 
+def _read_file_secrets() -> dict[str, str]:
+    try:
+        if not _SECRETS_FILE_PATH.exists():
+            return {}
+        payload = json.loads(_SECRETS_FILE_PATH.read_text())
+    except Exception:
+        return {}
+
+    if not isinstance(payload, dict):
+        return {}
+
+    normalized: dict[str, str] = {}
+    for key, value in payload.items():
+        try:
+            normalized_name = normalize_secret_name(str(key))
+        except Exception:
+            continue
+        normalized_value = str(value).strip()
+        if normalized_value:
+            normalized[normalized_name] = normalized_value
+
+    return normalized
+
+
+def _write_file_secrets(values: dict[str, str]) -> None:
+    _SECRETS_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _SECRETS_FILE_PATH.write_text(json.dumps(values, indent=2, sort_keys=True))
+    os.chmod(_SECRETS_FILE_PATH, 0o600)
+
+
+def _get_file_secret(name: str) -> str:
+    values = _read_file_secrets()
+    return values.get(name, "")
+
+
+def _set_file_secret(name: str, value: str) -> None:
+    values = _read_file_secrets()
+    values[name] = value
+    _write_file_secrets(values)
+
+
+def _delete_file_secret(name: str) -> None:
+    values = _read_file_secrets()
+    if name not in values:
+        return
+
+    values.pop(name, None)
+    if not values:
+        try:
+            _SECRETS_FILE_PATH.unlink()
+        except Exception:
+            return
+        return
+
+    _write_file_secrets(values)
+
+
 def get_secret(name: str, default: str = "") -> str:
     normalized = normalize_secret_name(name)
 
@@ -42,15 +102,18 @@ def get_secret(name: str, default: str = "") -> str:
         return env_value
 
     if _keyring is None:
-        return default
+        file_value = _get_file_secret(normalized)
+        return file_value or default
 
     try:
         stored_value = _keyring.get_password(SERVICE_NAME, normalized)
     except Exception:
-        return default
+        file_value = _get_file_secret(normalized)
+        return file_value or default
 
     if not stored_value:
-        return default
+        file_value = _get_file_secret(normalized)
+        return file_value or default
 
     value = str(stored_value).strip()
     return value or default
@@ -62,14 +125,16 @@ def secret_source(name: str) -> str:
     if os.getenv(normalized, "").strip():
         return "env"
     if _keyring is None:
-        return "none"
+        return "file" if _get_file_secret(normalized) else "none"
 
     try:
         value = _keyring.get_password(SERVICE_NAME, normalized)
     except Exception:
-        return "none"
+        return "file" if _get_file_secret(normalized) else "none"
 
-    return "keyring" if str(value or "").strip() else "none"
+    if str(value or "").strip():
+        return "keyring"
+    return "file" if _get_file_secret(normalized) else "none"
 
 
 def set_secret(name: str, value: str) -> None:
@@ -78,21 +143,25 @@ def set_secret(name: str, value: str) -> None:
     if not normalized_value:
         raise ValueError("Secret value cannot be empty")
 
-    if _keyring is None:
-        raise RuntimeError("Keyring backend is unavailable. Install keyring and a system keyring backend.")
+    if _keyring is not None:
+        try:
+            _keyring.set_password(SERVICE_NAME, normalized, normalized_value)
+            return
+        except Exception:
+            pass
 
-    _keyring.set_password(SERVICE_NAME, normalized, normalized_value)
+    _set_file_secret(normalized, normalized_value)
 
 
 def delete_secret(name: str) -> None:
     normalized = normalize_secret_name(name)
-    if _keyring is None:
-        return
+    if _keyring is not None:
+        try:
+            _keyring.delete_password(SERVICE_NAME, normalized)
+        except Exception:
+            pass
 
-    try:
-        _keyring.delete_password(SERVICE_NAME, normalized)
-    except Exception:
-        return
+    _delete_file_secret(normalized)
 
 
 def supported_secrets() -> tuple[str, ...]:

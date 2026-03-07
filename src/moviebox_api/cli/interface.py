@@ -662,7 +662,7 @@ def interactive_tui_command():
 )
 @click.help_option("-h", "--help")
 def secret_set_command(name: str, value: str):
-    """Store API secret in local encrypted keyring."""
+    """Store API secret in local secret backend."""
 
     normalized_name = name.upper()
     try:
@@ -671,30 +671,30 @@ def secret_set_command(name: str, value: str):
         click.echo(f"Failed to save secret {normalized_name}: {exc}")
         return
 
-    click.echo(f"Saved secret {normalized_name} in keyring.")
+    click.echo(f"Saved secret {normalized_name} ({secret_source(normalized_name)}).")
 
 
 @click.command(context_settings=command_context_settings)
 @click.argument("name", type=click.Choice(supported_secrets(), case_sensitive=False))
 @click.help_option("-h", "--help")
 def secret_unset_command(name: str):
-    """Remove API secret from local keyring."""
+    """Remove API secret from local secret backends."""
 
     normalized_name = name.upper()
     delete_secret(normalized_name)
-    click.echo(f"Removed secret {normalized_name} from keyring (if it existed).")
+    click.echo(f"Removed secret {normalized_name} from local storage (if it existed).")
 
 
 @click.command(context_settings=command_context_settings)
 @click.help_option("-h", "--help")
 def secret_status_command():
-    """Show whether API secrets come from env/keyring/none."""
+    """Show whether API secrets come from env/keyring/file/none."""
 
     for secret_name in supported_secrets():
         click.echo(f"{secret_name}: {secret_source(secret_name)}")
 
     if not keyring_available():
-        click.echo("Keyring backend unavailable. Install keyring for encrypted local storage.")
+        click.echo("Keyring backend unavailable. Using local file fallback when secrets are set.")
 
 
 @click.command(context_settings=command_context_settings)

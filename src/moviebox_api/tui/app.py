@@ -924,12 +924,14 @@ class InteractiveTextualApp(App[None]):
             if sources:
                 self._set_loading(True, "Fetching external subtitles...")
                 try:
-                    subtitles.extend(
-                        await self._fetch_external_subtitles(
-                            sources=sources,
-                            preferred_language_id=preferred_language_id,
-                        )
+                    fetched_external = await self._fetch_external_subtitles(
+                        sources=sources,
+                        preferred_language_id=preferred_language_id,
                     )
+                    subtitles.extend(fetched_external)
+                except Exception as exc:
+                    if not silent:
+                        self._set_status(f"External subtitle fetch failed: {exc}")
                 finally:
                     self._set_loading(False)
 

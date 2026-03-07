@@ -17,6 +17,11 @@ class _FakeKeyring:
         self.values.pop((service_name, username), None)
 
 
+@pytest.fixture(autouse=True)
+def _isolated_file_secret_store(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    monkeypatch.setattr(secrets_mod, "_SECRETS_FILE_PATH", tmp_path / "secrets.json")
+
+
 def test_get_secret_prefers_environment(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("MOVIEBOX_SUBDL_API_KEY", "env-value")
 
@@ -37,11 +42,12 @@ def test_get_secret_reads_keyring_when_env_missing(monkeypatch: pytest.MonkeyPat
     assert secrets_mod.secret_source("MOVIEBOX_SUBDL_API_KEY") == "keyring"
 
 
-def test_set_secret_raises_without_keyring(monkeypatch: pytest.MonkeyPatch):
+def test_set_secret_falls_back_to_file_without_keyring(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(secrets_mod, "_keyring", None)
 
-    with pytest.raises(RuntimeError, match="Keyring backend is unavailable"):
-        secrets_mod.set_secret("MOVIEBOX_SUBDL_API_KEY", "abc")
+    secrets_mod.set_secret("MOVIEBOX_SUBDL_API_KEY", "abc")
+    assert secrets_mod.get_secret("MOVIEBOX_SUBDL_API_KEY") == "abc"
+    assert secrets_mod.secret_source("MOVIEBOX_SUBDL_API_KEY") == "file"
 
 
 def test_set_secret_writes_to_keyring(monkeypatch: pytest.MonkeyPatch):
@@ -51,3 +57,12 @@ def test_set_secret_writes_to_keyring(monkeypatch: pytest.MonkeyPatch):
     secrets_mod.set_secret("MOVIEBOX_SUBSOURCE_API_KEY", "my-value")
 
     assert fake_keyring.get_password(secrets_mod.SERVICE_NAME, "MOVIEBOX_SUBSOURCE_API_KEY") == "my-value"
+
+
+def test_delete_secret_removes_file_fallback(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(secrets_mod, "_keyring", None)
+    secrets_mod.set_secret("MOVIEBOX_SUBDL_API_KEY", "abc")
+    assert secrets_mod.secret_source("MOVIEBOX_SUBDL_API_KEY") == "file"
+
+    secrets_mod.delete_secret("MOVIEBOX_SUBDL_API_KEY")
+    assert secrets_mod.secret_source("MOVIEBOX_SUBDL_API_KEY") == "none"
