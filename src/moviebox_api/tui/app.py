@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
+import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,7 +45,7 @@ from moviebox_api.stremio.subtitle_sources import (
     fetch_external_subtitles,
     subtitle_source_is_configured,
 )
-from moviebox_api.tui.playback import play_stream, should_use_android_chooser
+from moviebox_api.tui.playback import is_termux_environment, play_stream, should_use_android_chooser
 
 
 @dataclass(slots=True)
@@ -229,7 +231,7 @@ class InteractiveTextualApp(App[None]):
         with Vertical(id="root"):
             with Vertical(id="status_card"):
                 yield Static(
-                    "Use pages to navigate workflow. Termux defaults to Android chooser playback.",
+                    "Use pages to navigate workflow. Termux defaults to MPV Android app playback.",
                     id="status",
                 )
 
@@ -268,6 +270,7 @@ class InteractiveTextualApp(App[None]):
                         )
                         yield Input(placeholder="Search title", id="query_input", classes="flex_input")
                         yield Button("Search", id="search_button", variant="primary")
+                        yield Button("Type (Termux)", id="search_dialog_button")
                     yield DataTable(id="results_table")
                     yield Static(
                         "Select a search result row to continue to Source page.",
@@ -448,6 +451,9 @@ class InteractiveTextualApp(App[None]):
         if button_id == "search_button":
             await self._handle_search()
             return
+        if button_id == "search_dialog_button":
+            await self._prompt_search_query_termux()
+            return
         if button_id == "resolve_button":
             await self._handle_resolve_streams()
             return
@@ -521,9 +527,18 @@ class InteractiveTextualApp(App[None]):
         self._set_status("Trending loaded. Select a row or go to Search page.")
 
     async def _handle_search(self) -> None:
-        query = self.query_one("#query_input", Input).value.strip()
+        query_input = self.query_one("#query_input", Input)
+        query = query_input.value.strip()
+
+        if not query and is_termux_environment():
+            prompted_query = await self._prompt_search_query_termux()
+            if prompted_query is not None:
+                query = prompted_query.strip()
+
         if not query:
-            self._set_status("Search query is required.")
+            self._set_status(
+                "Search query is required. On Termux install `termux-api` and use 'Type (Termux)'."
+            )
             return
 
         selected_subject = self.query_one("#subject_type_select", Select).value
@@ -558,6 +573,66 @@ class InteractiveTextualApp(App[None]):
             return
 
         self._set_status("Search finished. Select a row to continue.")
+
+    async def _prompt_search_query_termux(self) -> str | None:
+        prompted = await self._prompt_termux_text_dialog(
+            title="Moviebox Search",
+            hint="Type title",
+        )
+        if prompted is None:
+            return None
+
+        query_input = self.query_one("#query_input", Input)
+        query_input.value = prompted
+        query_input.focus()
+
+        if prompted.strip():
+            self._set_status("Query updated from Termux dialog. Press Search.")
+        return prompted
+
+    async def _prompt_termux_text_dialog(self, *, title: str, hint: str) -> str | None:
+        if not is_termux_environment():
+            self._set_status("Termux dialog input is only available in Termux environment.")
+            return None
+
+        if shutil.which("termux-dialog") is None:
+            self._set_status("`termux-dialog` not found. Install it with `pkg install termux-api` in Termux.")
+            return None
+
+        command = ["termux-dialog", "text", "-t", title]
+        if hint:
+            command.extend(["-i", hint])
+
+        self._set_loading(True, "Opening Termux input dialog...")
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout_data, stderr_data = await process.communicate()
+        except Exception as exc:
+            self._set_status(f"Failed to open Termux dialog: {exc}")
+            return None
+        finally:
+            self._set_loading(False)
+
+        if process.returncode != 0:
+            error_text = stderr_data.decode("utf-8", errors="ignore").strip()
+            self._set_status(f"Termux dialog failed: {error_text or 'unknown error'}")
+            return None
+
+        raw_text = stdout_data.decode("utf-8", errors="ignore").strip()
+        if not raw_text:
+            return ""
+
+        try:
+            payload = json.loads(raw_text)
+        except json.JSONDecodeError:
+            return raw_text
+
+        text_value = str(payload.get("text", ""))
+        return text_value
 
     async def _handle_trending_selected(self, row_index: int) -> None:
         if row_index < 0 or row_index >= len(self.trending_items):
@@ -836,11 +911,11 @@ class InteractiveTextualApp(App[None]):
                 return
             if self._advance_episode_selector():
                 self._set_status(
-                    "Android chooser mode cannot detect playback completion. "
+                    "Android external player mode cannot detect playback completion. "
                     "Episode selector moved to next episode for quick run."
                 )
             else:
-                self._set_status("Android chooser mode: reached last known episode.")
+                self._set_status("Android external player mode: reached last known episode.")
             return
 
         while True:
@@ -892,8 +967,8 @@ class InteractiveTextualApp(App[None]):
 
             if self.selected_subtitles and should_use_android_chooser():
                 self._set_status(
-                    "Android chooser mode: external subtitle files are not auto-attached. "
-                    "Use player subtitle feature or switch MOVIEBOX_PLAYBACK_TARGET=mpv."
+                    "Android external player mode: external subtitle files are not auto-attached. "
+                    "Use player subtitle feature or switch MOVIEBOX_PLAYBACK_TARGET=mpv-cli."
                 )
 
             self.query_one("#loading_label", Static).update("Launching player...")

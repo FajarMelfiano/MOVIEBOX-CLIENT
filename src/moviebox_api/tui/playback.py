@@ -21,14 +21,28 @@ def is_termux_environment() -> bool:
 
 
 def should_use_android_chooser() -> bool:
-    """Return whether playback should default to Android app chooser."""
+    """Return whether playback should run through Android intent path."""
+
+    return _android_playback_mode() in {"mpv_app", "chooser"}
+
+
+def _android_playback_mode() -> str:
+    """Return Android playback mode: mpv_app, chooser, or none."""
 
     target = os.getenv("MOVIEBOX_PLAYBACK_TARGET", "auto").strip().lower()
-    if target == "android":
-        return True
-    if target in {"mpv", "vlc", "desktop"}:
-        return False
-    return is_termux_environment()
+    is_termux = is_termux_environment()
+
+    if target in {"android", "chooser"}:
+        return "chooser"
+    if target in {"android-mpv", "mpv-android"}:
+        return "mpv_app"
+    if target == "mpv":
+        return "mpv_app" if is_termux else "none"
+    if target in {"mpv-cli", "desktop", "vlc"}:
+        return "none"
+    if target == "auto":
+        return "mpv_app" if is_termux else "none"
+    return "mpv_app" if is_termux else "none"
 
 
 def _is_direct_media_url(url: str) -> bool:
@@ -38,16 +52,34 @@ def _is_direct_media_url(url: str) -> bool:
 
 def _open_android_chooser(url: str) -> bool:
     if shutil.which("termux-open-url"):
-        subprocess.run(["termux-open-url", url], check=False)
-        return True
+        return subprocess.run(["termux-open-url", url], check=False).returncode == 0
 
     if shutil.which("am"):
-        subprocess.run(
-            ["am", "start", "-a", "android.intent.action.VIEW", "-d", url],
-            check=False,
-        )
-        return True
+        return _run_android_intent(["am", "start", "-a", "android.intent.action.VIEW", "-d", url])
 
+    return False
+
+
+def _run_android_intent(command: list[str]) -> bool:
+    result = subprocess.run(command, check=False, capture_output=True, text=True)
+    combined_output = f"{result.stdout}\n{result.stderr}".lower()
+    if "error:" in combined_output or "exception" in combined_output:
+        return False
+    return result.returncode == 0
+
+
+def _open_android_mpv_app(url: str) -> bool:
+    if not shutil.which("am"):
+        return False
+
+    commands = [
+        ["am", "start", "-a", "android.intent.action.VIEW", "-d", url, "-n", "is.xyz.mpv/.MPVActivity"],
+        ["am", "start", "-a", "android.intent.action.VIEW", "-d", url, "-n", "is.xyz.mpv/.MainActivity"],
+        ["am", "start", "-a", "android.intent.action.VIEW", "-d", url, "-p", "is.xyz.mpv"],
+    ]
+    for command in commands:
+        if _run_android_intent(command):
+            return True
     return False
 
 
@@ -72,7 +104,17 @@ def play_stream(
 
     subtitle_paths = subtitle_paths or []
 
-    if should_use_android_chooser():
+    android_mode = _android_playback_mode()
+
+    if android_mode == "mpv_app":
+        if _open_android_mpv_app(stream_url):
+            return "Opened MPV Android app"
+        if _open_android_chooser(stream_url):
+            return "Opened Android chooser (MPV app unavailable)"
+        _open_url_fallback(stream_url)
+        return "Opened URL via browser fallback"
+
+    if android_mode == "chooser":
         if _open_android_chooser(stream_url):
             return "Opened Android app chooser"
         _open_url_fallback(stream_url)

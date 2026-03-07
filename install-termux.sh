@@ -29,15 +29,33 @@ fail() {
     exit 1
 }
 
+SHELL_RC_FILE_USED="${HOME}/.bashrc"
+
 setup_shell_integration() {
     if [ "${MOVIEBOX_SKIP_SHELL_SETUP:-0}" = "1" ]; then
         warn "Skipping shell integration because MOVIEBOX_SKIP_SHELL_SETUP=1"
         return
     fi
 
+    local shell_name
     local rc_file
     local marker
-    rc_file="${HOME}/.bashrc"
+    shell_name="$(basename "${SHELL:-}")"
+    case "$shell_name" in
+    zsh)
+        rc_file="${HOME}/.zshrc"
+        ;;
+    bash | "")
+        rc_file="${HOME}/.bashrc"
+        ;;
+    *)
+        warn "Shell '${shell_name:-unknown}' not explicitly supported, using bash config"
+        shell_name="bash"
+        rc_file="${HOME}/.bashrc"
+        ;;
+    esac
+
+    SHELL_RC_FILE_USED="$rc_file"
     marker="# >>> moviebox shell setup >>>"
 
     if [ -f "$rc_file" ] && grep -qF "$marker" "$rc_file"; then
@@ -50,7 +68,46 @@ setup_shell_integration() {
     local escaped_root
     escaped_root="${SCRIPT_DIR//\"/\\\"}"
 
-    cat >>"$rc_file" <<EOF
+    if [ "$shell_name" = "zsh" ]; then
+        cat >>"$rc_file" <<EOF
+
+# >>> moviebox shell setup >>>
+export MOVIEBOX_PROJECT_ROOT="$escaped_root"
+_moviebox_repo_auto_venv() {
+  local root="\${MOVIEBOX_PROJECT_ROOT:-}"
+  if [[ -z "\$root" ]]; then
+    return
+  fi
+  if [[ "\$PWD" == "\$root" || "\$PWD" == "\$root/"* ]]; then
+    if [[ -z "\${VIRTUAL_ENV:-}" && -f "\$root/.venv/bin/activate" ]]; then
+      source "\$root/.venv/bin/activate" >/dev/null 2>&1
+      export MOVIEBOX_AUTO_VENV_ACTIVE=1
+    fi
+  else
+    if [[ "\${MOVIEBOX_AUTO_VENV_ACTIVE:-0}" == "1" && -n "\${VIRTUAL_ENV:-}" ]]; then
+      if type deactivate >/dev/null 2>&1; then
+        deactivate >/dev/null 2>&1
+      fi
+      unset MOVIEBOX_AUTO_VENV_ACTIVE
+    fi
+  fi
+}
+if [[ -z "\${MOVIEBOX_AUTO_VENV_HOOKED:-}" ]]; then
+  autoload -Uz add-zsh-hook
+  add-zsh-hook precmd _moviebox_repo_auto_venv
+  export MOVIEBOX_AUTO_VENV_HOOKED=1
+fi
+if [ -x "\${MOVIEBOX_PROJECT_ROOT}/.venv/bin/moviebox" ]; then
+  if ! type compdef >/dev/null 2>&1; then
+    autoload -Uz compinit
+    compinit
+  fi
+  eval "\$(_MOVIEBOX_COMPLETE=zsh_source "\${MOVIEBOX_PROJECT_ROOT}/.venv/bin/moviebox")"
+fi
+# <<< moviebox shell setup <<<
+EOF
+    else
+        cat >>"$rc_file" <<EOF
 
 # >>> moviebox shell setup >>>
 export MOVIEBOX_PROJECT_ROOT="$escaped_root"
@@ -80,6 +137,7 @@ if [ -x "\${MOVIEBOX_PROJECT_ROOT}/.venv/bin/moviebox" ]; then
 fi
 # <<< moviebox shell setup <<<
 EOF
+    fi
 
     ok "Added auto-venv and completion to $rc_file"
 }
@@ -95,7 +153,7 @@ pkg update -y
 ok "Termux package index updated"
 
 step "Installing required system packages"
-pkg install -y python git
+pkg install -y python git termux-api
 ok "System packages installed"
 
 step "Checking Python version"
@@ -166,8 +224,12 @@ step "Verifying CLI entrypoint"
 ok "moviebox CLI is ready"
 
 printf "\n${GREEN}Install complete.${NC}\n"
-printf '%b\n' "- Open a new terminal (or run ${CYAN}source ~/.bashrc${NC}) to enable auto-venv + completion."
+if [ "$SHELL_RC_FILE_USED" = "${HOME}/.zshrc" ]; then
+    printf '%b\n' "- Open a new terminal (or run ${CYAN}source ~/.zshrc${NC}) to enable auto-venv + completion."
+else
+    printf '%b\n' "- Open a new terminal (or run ${CYAN}source ~/.bashrc${NC}) to enable auto-venv + completion."
+fi
 printf '%b\n' "- Run now: ${CYAN}moviebox interactive-tui${NC}"
-printf '%b\n' "- Termux playback defaults to Android chooser (${CYAN}termux-open-url${NC})."
+printf '%b\n' "- Termux playback defaults to MPV Android app (fallback chooser)."
 printf '%b\n' "- Optional player: ${CYAN}pkg install mpv${NC}"
 printf '%b\n' "- Disable shell setup on rerun with: ${CYAN}MOVIEBOX_SKIP_SHELL_SETUP=1 ./install-termux.sh${NC}"

@@ -70,6 +70,10 @@ Run:
 moviebox interactive-tui
 ```
 
+Note:
+
+- Installer also installs `termux-api` so TUI can open native text dialog (`Type (Termux)`) when keyboard focus is limited.
+
 ## 2) What installers configure
 
 All installers:
@@ -254,7 +258,8 @@ pkg upgrade -y
 ### Stream playback issues
 
 - Install `mpv` or `vlc`.
-- On Termux, chooser mode relies on installed Android media apps.
+- On Termux, default mode opens MPV Android app (`is.xyz.mpv`) and falls back to chooser.
+- Force terminal mpv instead of Android app with `MOVIEBOX_PLAYBACK_TARGET=mpv-cli`.
 
 ### Subtitle API key setup
 
