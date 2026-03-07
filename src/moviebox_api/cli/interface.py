@@ -806,6 +806,8 @@ def source_streams_command(
                     "source": stream.source,
                     "quality": stream.quality,
                     "size": stream.size,
+                    "audio": stream.audio,
+                    "audio_tracks": stream.audio_tracks,
                     "headers": stream.headers,
                     "subtitles": [
                         {
@@ -837,7 +839,8 @@ def source_streams_command(
 
     for index, stream in enumerate(streams, start=1):
         quality = f" [{stream.quality}]" if stream.quality else ""
-        click.echo(f"{index}. {stream.source}{quality}")
+        audio = f" [audio: {stream.audio}]" if stream.audio else ""
+        click.echo(f"{index}. {stream.source}{quality}{audio}")
         click.echo(f"   {stream.url}")
         if stream.headers:
             click.echo(f"   headers: {', '.join(stream.headers.keys())}")

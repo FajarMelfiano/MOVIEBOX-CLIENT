@@ -11,7 +11,7 @@ Unofficial Python client for searching, streaming, and downloading movies or TV 
 - Subtitle source selection (`provider`, `opensubtitles`, `subdl`, `subsource`, `all`).
 - Secret management for subtitle API keys (`secret-set`, `secret-status`, `secret-unset`).
 - CLI audio fallback preference for downloads (`--audio`).
-- Termux-aware playback defaults (opens MPV Android app, fallback to chooser).
+- Termux-aware playback with player detection + selector (MPV Android, MX, VLC, chooser).
 
 ## Quick install
 
@@ -135,9 +135,10 @@ export MOVIEBOX_SUBSOURCE_API_KEY="<your-key>"
 - Search by subject type (Movies or TV Series).
 - TV season/episode dropdown selectors.
 - Source provider and stream selection.
-- Subtitle source and language-id filtering.
-- Run page for stream/download actions.
-- TV auto-next episode behavior in stream mode (desktop players).
+- Subtitle source selection with full language names (not short code labels).
+- Run page for stream/download actions and player target selection.
+- Stream fallback for video/audio variants; subtitle-launch fallback if app extras are unsupported.
+- TV next episode flow with explicit confirmation (continue or stop).
 - Movie run returns to Home after completion.
 
 ## Shell productivity
@@ -172,9 +173,11 @@ Manual completion and auto-venv setup instructions are documented in `INSTALL.md
 ## Termux notes
 
 - Install Termux from F-Droid for best compatibility.
-- Playback defaults to MPV Android app in Termux mode (fallback chooser if MPV app is unavailable).
-- Set `MOVIEBOX_PLAYBACK_TARGET=mpv-cli` if you explicitly want terminal mpv.
-- External subtitle file auto-attach depends on Android player support.
+- Playback defaults to MPV Android app in Termux mode, with detected fallback order.
+- You can choose Android player from Run page (`MPV`, `MX`, `VLC`, `chooser`) when installed.
+- Browser fallback is disabled in Termux external-player mode to avoid accidental auto-download.
+- Set `MOVIEBOX_PLAYBACK_TARGET` to override defaults (`auto`, `android-mpv`, `mx`, `vlc`, `chooser`, `mpv-cli`).
+- External subtitle file auto-attach depends on per-player Android intent support.
 - If terminal keyboard does not appear in Textual search input, use `Type (Termux)` button (uses `termux-dialog`).
 
 ## Development

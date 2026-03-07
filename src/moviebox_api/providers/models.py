@@ -23,6 +23,8 @@ class ProviderStream:
     source: str
     quality: str | None = None
     size: int | None = None
+    audio: str | None = None
+    audio_tracks: list[str] = field(default_factory=list)
     subtitles: list[ProviderSubtitle] = field(default_factory=list)
     headers: dict[str, str] = field(default_factory=dict)
 

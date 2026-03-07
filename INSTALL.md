@@ -86,7 +86,7 @@ All installers:
 Shell integration (automatic by default):
 
 - `install.sh`: bash/zsh auto-venv + completion
-- `install-termux.sh`: bash auto-venv + completion
+- `install-termux.sh`: bash/zsh auto-venv + completion
 - `install.ps1`: PowerShell profile auto-venv + completion
 - `install.bat`: no shell profile changes (use PowerShell installer for that)
 
@@ -258,8 +258,21 @@ pkg upgrade -y
 ### Stream playback issues
 
 - Install `mpv` or `vlc`.
-- On Termux, default mode opens MPV Android app (`is.xyz.mpv`) and falls back to chooser.
-- Force terminal mpv instead of Android app with `MOVIEBOX_PLAYBACK_TARGET=mpv-cli`.
+- On Termux, Run page detects installed Android players (`MPV`, `MX`, `VLC`) and lets you pick one.
+- Termux external-player mode does not fall back to browser (prevents accidental auto-download behavior).
+- Set `MOVIEBOX_PLAYBACK_TARGET` to override startup default:
+  - `auto` (recommended)
+  - `android-mpv`
+  - `mx`
+  - `vlc`
+  - `chooser`
+  - `mpv-cli` (terminal mpv)
+
+### TV next episode behavior
+
+- Stream mode now asks confirmation before moving to the next episode.
+- Subtitle language preference is persisted across episode continuation.
+- Subtitle language table uses full language names for readability.
 
 ### Subtitle API key setup
 

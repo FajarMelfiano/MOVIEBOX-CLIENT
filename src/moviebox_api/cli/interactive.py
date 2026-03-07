@@ -25,6 +25,7 @@ from rich.table import Table
 from moviebox_api.constants import CURRENT_WORKING_DIR, DOWNLOAD_REQUEST_HEADERS, SubjectType
 from moviebox_api.download import CaptionFileDownloader, MediaFileDownloader
 from moviebox_api.helpers import get_event_loop
+from moviebox_api.language import language_display_name, normalize_language_id
 from moviebox_api.models import CaptionFileMetadata, MediaFileMetadata
 from moviebox_api.providers import SUPPORTED_PROVIDERS, normalize_provider_name
 from moviebox_api.providers.models import ProviderStream, ProviderSubtitle
@@ -38,9 +39,9 @@ from moviebox_api.stremio.catalog import (
     search_cinemeta_catalog,
 )
 from moviebox_api.stremio.subtitle_sources import (
-    ExternalSubtitle,
     SUBDL_API_KEY_ENV,
     SUBSOURCE_API_KEY_ENV,
+    ExternalSubtitle,
     fetch_external_subtitles,
     subtitle_source_is_configured,
 )
@@ -72,41 +73,6 @@ def _normalise_resolution(value: str | int | None, default: int = 720) -> int:
             return int(matched.group(1))
 
     return default
-
-
-def _normalise_language_id(language: str | None) -> str:
-    if not language:
-        return "unknown"
-
-    lowered = language.strip().lower()
-    if not lowered:
-        return "unknown"
-
-    alias_map = {
-        "english": "eng",
-        "indonesian": "ind",
-        "spanish": "spa",
-        "french": "fre",
-        "portuguese": "por",
-        "russian": "rus",
-        "arabic": "ara",
-        "turkish": "tur",
-        "japanese": "jpn",
-        "korean": "kor",
-        "chinese": "zho",
-    }
-    if lowered in alias_map:
-        return alias_map[lowered]
-
-    if lowered.isascii() and len(lowered) in {2, 3}:
-        return lowered
-
-    compact = re.sub(r"[^a-z]", "", lowered)
-    if len(compact) >= 3:
-        return compact[:3]
-    if compact:
-        return compact
-    return "unknown"
 
 
 def _is_direct_media_url(url: str) -> bool:
@@ -307,7 +273,7 @@ class MovieBoxTUI:
             return []
 
         preferred_language_id = Prompt.ask(
-            "Preferred subtitle language id (optional, for example eng/ind)",
+            "Preferred subtitle language (optional, for example Indonesian)",
             default="",
         ).strip()
         preferred_language = preferred_language_id or None
@@ -344,16 +310,21 @@ class MovieBoxTUI:
             return []
 
         if action == "stream":
-            console.print(
-                f"Using {len(filtered_entries)} subtitle tracks for language '{selected_language_id}'."
-            )
+            display_name = language_display_name(selected_language_id)
+            console.print(f"Using {len(filtered_entries)} subtitle tracks for language '{display_name}'.")
             return filtered_entries
 
         rows = [
-            [str(index), subtitle.source, subtitle.language_id, subtitle.label[:40], subtitle.url[:70]]
+            [
+                str(index),
+                subtitle.source,
+                language_display_name(subtitle.language_id),
+                subtitle.label[:40],
+                subtitle.url[:70],
+            ]
             for index, subtitle in enumerate(filtered_entries, start=1)
         ]
-        selected_index = _pick_from_table("Subtitles", ["#", "Source", "Lang", "Label", "URL"], rows)
+        selected_index = _pick_from_table("Subtitles", ["#", "Source", "Language", "Label", "URL"], rows)
         return [filtered_entries[selected_index]]
 
     def _choose_subtitle_language(
@@ -368,15 +339,15 @@ class MovieBoxTUI:
         language_ids = sorted(counts.keys(), key=lambda language_id: (-counts[language_id], language_id))
 
         if preferred_language:
-            normalized_preferred = _normalise_language_id(preferred_language)
+            normalized_preferred = normalize_language_id(preferred_language)
             if normalized_preferred in counts:
                 return normalized_preferred
 
         rows = [
-            [str(index), language_id, str(counts[language_id])]
+            [str(index), language_display_name(language_id), str(counts[language_id])]
             for index, language_id in enumerate(language_ids, start=1)
         ]
-        selected_index = _pick_from_table("Subtitle Languages", ["#", "Lang", "Count"], rows)
+        selected_index = _pick_from_table("Subtitle Languages", ["#", "Language", "Count"], rows)
         return language_ids[selected_index]
 
     def _collect_provider_subtitles(
@@ -395,7 +366,7 @@ class MovieBoxTUI:
                 _SubtitleChoice(
                     url=url,
                     language=language,
-                    language_id=_normalise_language_id(language),
+                    language_id=normalize_language_id(language),
                     label=label,
                     source="provider",
                 )
@@ -417,7 +388,8 @@ class MovieBoxTUI:
             if not subtitle_source_is_configured("subsource"):
                 console.print(
                     "[yellow]SubSource secret is missing. "
-                    f"Set {SUBSOURCE_API_KEY_ENV} or run `moviebox secret-set {SUBSOURCE_API_KEY_ENV}`.[/yellow]"
+                    f"Set {SUBSOURCE_API_KEY_ENV} or run "
+                    f"`moviebox secret-set {SUBSOURCE_API_KEY_ENV}`.[/yellow]"
                 )
                 return []
             return ["subsource"] if subtitle_source_is_configured("subsource") else []
@@ -473,7 +445,7 @@ class MovieBoxTUI:
             _SubtitleChoice(
                 url=subtitle.url,
                 language=subtitle.language,
-                language_id=_normalise_language_id(subtitle.language),
+                language_id=normalize_language_id(subtitle.language),
                 label=subtitle.label,
                 source=subtitle.source,
             )
@@ -507,7 +479,8 @@ class MovieBoxTUI:
                     )
                 except Exception as exc:
                     console.print(
-                        f"[yellow]Could not attach subtitle '{subtitle.label}' ({subtitle.language_id}): {exc}[/yellow]"
+                        "[yellow]Could not attach subtitle "
+                        f"'{subtitle.label}' ({subtitle.language_id}): {exc}[/yellow]"
                     )
                     continue
                 subtitle_paths.append(subtitle_path)
@@ -561,7 +534,8 @@ class MovieBoxTUI:
                     subtitle_path = self._download_subtitle_file(subtitle, Path(temp_dir.name), headers)
                 except Exception as exc:
                     console.print(
-                        f"[yellow]Could not attach subtitle '{subtitle.label}' ({subtitle.language_id}): {exc}[/yellow]"
+                        "[yellow]Could not attach subtitle "
+                        f"'{subtitle.label}' ({subtitle.language_id}): {exc}[/yellow]"
                     )
                     continue
                 subtitle_paths.append(subtitle_path)

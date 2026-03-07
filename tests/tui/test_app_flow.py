@@ -2,11 +2,11 @@ from datetime import date
 from types import SimpleNamespace
 
 import pytest
-from textual.widgets import ContentSwitcher, Input, Select
+from textual.widgets import ContentSwitcher, DataTable, Input, Select
 
 from moviebox_api.constants import SubjectType
 from moviebox_api.stremio.catalog import StremioSearchItem
-from moviebox_api.tui.app import InteractiveTextualApp
+from moviebox_api.tui.app import InteractiveTextualApp, SubtitleChoice
 
 
 @pytest.mark.asyncio
@@ -114,3 +114,137 @@ async def test_movie_execute_returns_to_home_page(monkeypatch: pytest.MonkeyPatc
 
         switcher = app.query_one("#page_switcher", ContentSwitcher)
         assert switcher.current == "page_home"
+
+
+@pytest.mark.asyncio
+async def test_tv_execute_stops_when_user_declines_next_episode(monkeypatch: pytest.MonkeyPatch):
+    app = InteractiveTextualApp()
+
+    tv_item = StremioSearchItem(
+        subjectId="tt0903747",
+        subjectType=SubjectType.TV_SERIES,
+        title="Breaking Bad",
+        description="",
+        releaseDate=date(2008, 1, 1),
+        imdbRatingValue=9.4,
+        genre=["Crime"],
+        imdbId="tt0903747",
+        releaseInfo="2008",
+        page_url="https://www.imdb.com/title/tt0903747/",
+        stremioType="series",
+        metadata={},
+    )
+
+    async with app.run_test() as _pilot:
+        app.selected_item = tv_item
+        app.selected_stream = SimpleNamespace(
+            url="https://example.com/video.mp4",
+            headers={},
+            source="provider",
+            quality="1080p",
+            audio="Indonesian",
+            audio_tracks=["Indonesian"],
+            subtitles=[],
+        )
+        app.season_map = {1: 2}
+        app._setup_episode_selects(selected_season=1, selected_episode=1)
+
+        async def _fake_handle_play() -> bool:
+            return True
+
+        async def _deny_continue(*, default_continue: bool, **_kwargs) -> bool:
+            return False
+
+        monkeypatch.setattr(app, "_handle_play", _fake_handle_play)
+        monkeypatch.setattr(app, "_confirm_continue_next_episode", _deny_continue)
+
+        await app._handle_execute()
+        assert app.query_one("#episode_select", Select).value == "1"
+
+
+@pytest.mark.asyncio
+async def test_subtitle_preference_persists_between_episode_fetches(monkeypatch: pytest.MonkeyPatch):
+    app = InteractiveTextualApp()
+
+    tv_item = StremioSearchItem(
+        subjectId="tt0903747",
+        subjectType=SubjectType.TV_SERIES,
+        title="Breaking Bad",
+        description="",
+        releaseDate=date(2008, 1, 1),
+        imdbRatingValue=9.4,
+        genre=["Crime"],
+        imdbId="tt0903747",
+        releaseInfo="2008",
+        page_url="https://www.imdb.com/title/tt0903747/",
+        stremioType="series",
+        metadata={},
+    )
+
+    async with app.run_test() as _pilot:
+        app.selected_item = tv_item
+        app.selected_stream = SimpleNamespace(
+            url="https://example.com/video.mp4",
+            headers={},
+            source="provider",
+            quality="1080p",
+            audio="Indonesian",
+            audio_tracks=["Indonesian"],
+            subtitles=[],
+        )
+        app.preferred_subtitle_language_id = "ind"
+
+        subtitle_entries = [
+            SubtitleChoice(
+                url="https://example.com/sub-ind.srt",
+                language="Indonesian",
+                language_id="ind",
+                label="Indonesian",
+                source="provider",
+            ),
+            SubtitleChoice(
+                url="https://example.com/sub-ar-1.srt",
+                language="Arabic",
+                language_id="ara",
+                label="Arabic 1",
+                source="provider",
+            ),
+            SubtitleChoice(
+                url="https://example.com/sub-ar-2.srt",
+                language="Arabic",
+                language_id="ara",
+                label="Arabic 2",
+                source="provider",
+            ),
+        ]
+
+        monkeypatch.setattr(app, "_collect_provider_subtitles", lambda: subtitle_entries)
+
+        loaded = await app._handle_subtitle_fetch(silent=True)
+        assert loaded is True
+        assert app.selected_subtitles
+        assert all(subtitle.language_id == "ind" for subtitle in app.selected_subtitles)
+
+
+@pytest.mark.asyncio
+async def test_subtitle_selection_status_uses_full_language_name():
+    app = InteractiveTextualApp()
+
+    async with app.run_test() as _pilot:
+        app.subtitle_language_order = ["ind"]
+        app.subtitles_by_language = {
+            "ind": [
+                SubtitleChoice(
+                    url="https://example.com/sub-ind.srt",
+                    language="Indonesian",
+                    language_id="ind",
+                    label="Indonesian",
+                    source="provider",
+                )
+            ]
+        }
+
+        app._handle_subtitle_language_selected(0)
+        table = app.query_one("#subtitle_tracks_table", DataTable)
+        row = table.get_row_at(0)
+        assert row[2] == "Indonesian"

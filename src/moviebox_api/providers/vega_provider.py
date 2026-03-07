@@ -273,6 +273,8 @@ class VegaProvider(BaseStreamProvider):
                     url=stream_url,
                     source=source,
                     quality=quality,
+                    audio=audio_label or (audio_tracks[0] if audio_tracks else None),
+                    audio_tracks=audio_tracks,
                     subtitles=subtitles,
                     headers=headers,
                 )

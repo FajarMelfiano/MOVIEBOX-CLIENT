@@ -8,6 +8,7 @@ from typing import Any
 
 import httpx
 
+from moviebox_api.language import normalize_language_id, to_iso639_1
 from moviebox_api.security.secrets import get_secret
 
 SUBDL_API_KEY_ENV = "MOVIEBOX_SUBDL_API_KEY"
@@ -27,32 +28,6 @@ _DEFAULT_HEADERS = {
     "Accept-Language": "en-US,en;q=0.5",
 }
 
-_LANGUAGE_NAME_TO_CODE = {
-    "english": "en",
-    "indonesian": "id",
-    "spanish": "es",
-    "french": "fr",
-    "german": "de",
-    "italian": "it",
-    "portuguese": "pt",
-    "russian": "ru",
-    "arabic": "ar",
-    "turkish": "tr",
-    "japanese": "ja",
-    "korean": "ko",
-    "chinese": "zh",
-    "vietnamese": "vi",
-    "thai": "th",
-    "dutch": "nl",
-    "polish": "pl",
-    "romanian": "ro",
-    "persian": "fa",
-    "hindi": "hi",
-    "malay": "ms",
-    "tagalog": "tl",
-    "filipino": "tl",
-}
-
 
 @dataclass(slots=True)
 class ExternalSubtitle:
@@ -65,17 +40,15 @@ class ExternalSubtitle:
 
 
 def _normalise_language_code(language: str | None) -> str:
-    if not language:
+    canonical = normalize_language_id(language)
+    if canonical == "unknown":
         return "unknown"
 
-    lowered = language.strip().lower()
-    if not lowered:
-        return "unknown"
+    iso639_1 = to_iso639_1(canonical)
+    if iso639_1:
+        return iso639_1
 
-    if len(lowered) in {2, 3} and lowered.isascii():
-        return lowered
-
-    return _LANGUAGE_NAME_TO_CODE.get(lowered, lowered[:3])
+    return canonical
 
 
 def _preferred_language_codes(preferred_languages: list[str] | None) -> list[str]:

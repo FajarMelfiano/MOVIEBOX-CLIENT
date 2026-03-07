@@ -7,6 +7,7 @@ import json
 import re
 import shutil
 import tempfile
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -16,6 +17,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
+from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
     ContentSwitcher,
@@ -29,6 +31,7 @@ from textual.widgets import (
 )
 
 from moviebox_api.constants import CURRENT_WORKING_DIR, DOWNLOAD_REQUEST_HEADERS, SubjectType
+from moviebox_api.language import language_display_name, normalize_language_id
 from moviebox_api.providers import SUPPORTED_PROVIDERS, normalize_provider_name
 from moviebox_api.source import SourceResolver
 from moviebox_api.stremio.catalog import (
@@ -45,7 +48,14 @@ from moviebox_api.stremio.subtitle_sources import (
     fetch_external_subtitles,
     subtitle_source_is_configured,
 )
-from moviebox_api.tui.playback import is_termux_environment, play_stream, should_use_android_chooser
+from moviebox_api.tui.playback import (
+    AUTO_TARGET,
+    default_playback_target_id,
+    is_android_target,
+    is_termux_environment,
+    list_playback_targets,
+    play_stream,
+)
 
 
 @dataclass(slots=True)
@@ -57,39 +67,103 @@ class SubtitleChoice:
     source: str
 
 
-def _normalise_language_id(language: str | None) -> str:
-    if not language:
-        return "unknown"
+class ContinuePromptScreen(ModalScreen[bool]):
+    """Simple yes/no dialog used for TV episode continuation."""
 
-    lowered = language.strip().lower()
-    if not lowered:
-        return "unknown"
-
-    alias_map = {
-        "english": "eng",
-        "indonesian": "ind",
-        "spanish": "spa",
-        "french": "fre",
-        "portuguese": "por",
-        "russian": "rus",
-        "arabic": "ara",
-        "turkish": "tur",
-        "japanese": "jpn",
-        "korean": "kor",
-        "chinese": "zho",
+    CSS = """
+    ContinuePromptScreen {
+      align: center middle;
+      background: rgba(3, 22, 37, 0.75);
     }
-    if lowered in alias_map:
-        return alias_map[lowered]
 
-    if lowered.isascii() and len(lowered) in {2, 3}:
-        return lowered
+    #continue_prompt_dialog {
+      width: 72;
+      height: auto;
+      border: round #22d3ee;
+      background: #0f1a30;
+      padding: 1;
+    }
 
-    compact = re.sub(r"[^a-z]", "", lowered)
-    if len(compact) >= 3:
-        return compact[:3]
-    if compact:
-        return compact
-    return "unknown"
+    #continue_prompt_message {
+      margin: 0 0 1 0;
+      color: #dbe7ff;
+    }
+
+    #continue_prompt_buttons {
+      height: auto;
+    }
+
+    #continue_prompt_buttons Button {
+      margin-right: 1;
+      min-width: 12;
+    }
+
+    #continue_prompt_loading_row {
+      height: auto;
+      margin: 1 0 0 0;
+    }
+
+    #continue_prompt_loading_label {
+      margin-left: 1;
+      color: #93c5fd;
+    }
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        on_continue: Callable[[], Awaitable[bool]],
+        on_stop: Callable[[], Awaitable[bool]],
+    ) -> None:
+        super().__init__()
+        self._message = message
+        self._on_continue = on_continue
+        self._on_stop = on_stop
+        self._busy = False
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="continue_prompt_dialog"):
+            yield Static(self._message, id="continue_prompt_message")
+            with Horizontal(id="continue_prompt_buttons"):
+                yield Button("Stop", id="continue_stop_button")
+                yield Button("Continue", id="continue_yes_button", variant="success")
+            with Horizontal(id="continue_prompt_loading_row", classes="hidden"):
+                yield LoadingIndicator(id="continue_prompt_loading")
+                yield Static("Processing...", id="continue_prompt_loading_label")
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        if self._busy:
+            return
+        self._busy = True
+
+        continue_selected = event.button.id == "continue_yes_button"
+        self._set_busy_state(continue_selected)
+
+        try:
+            if continue_selected:
+                result = await self._on_continue()
+            else:
+                result = await self._on_stop()
+        except Exception:
+            result = False
+
+        self.dismiss(bool(result))
+
+    def _set_busy_state(self, continue_selected: bool) -> None:
+        self.query_one("#continue_yes_button", Button).disabled = True
+        self.query_one("#continue_stop_button", Button).disabled = True
+
+        if continue_selected:
+            self.query_one("#continue_prompt_message", Static).update("Preparing next episode...")
+            self.query_one("#continue_prompt_loading_label", Static).update(
+                "Loading streams and subtitles..."
+            )
+        else:
+            self.query_one("#continue_prompt_message", Static).update("Stopping...")
+            self.query_one("#continue_prompt_loading_label", Static).update("Applying your choice...")
+
+        self.query_one("#continue_prompt_loading_row").remove_class("hidden")
 
 
 class InteractiveTextualApp(App[None]):
@@ -225,6 +299,7 @@ class InteractiveTextualApp(App[None]):
         self.subtitles_by_language: dict[str, list[SubtitleChoice]] = {}
         self.subtitle_language_order: list[str] = []
         self.selected_subtitles: list[SubtitleChoice] = []
+        self.preferred_subtitle_language_id: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -334,7 +409,7 @@ class InteractiveTextualApp(App[None]):
                             prompt="Subtitle source",
                         )
                         yield Input(
-                            placeholder="Language id (optional, ex: eng/ind)",
+                            placeholder="Preferred subtitle language (optional, ex: Indonesian)",
                             id="subtitle_language_input",
                             classes="flex_input",
                         )
@@ -356,6 +431,13 @@ class InteractiveTextualApp(App[None]):
                             allow_blank=False,
                             prompt="Action",
                         )
+                        yield Select(
+                            options=[("Auto (Recommended)", AUTO_TARGET)],
+                            value=AUTO_TARGET,
+                            id="player_select",
+                            allow_blank=False,
+                            prompt="Player",
+                        )
                         yield Input(
                             value=str(CURRENT_WORKING_DIR),
                             placeholder="Output directory",
@@ -368,6 +450,7 @@ class InteractiveTextualApp(App[None]):
 
     def on_mount(self) -> None:
         self._configure_tables()
+        self._configure_player_options()
         self._set_page("home")
         self._apply_action_ui_state("stream")
         self.query_one("#query_input", Input).focus()
@@ -377,9 +460,9 @@ class InteractiveTextualApp(App[None]):
         table_defs = {
             "#trending_table": ("#", "Title", "Year", "Rating", "Genre"),
             "#results_table": ("#", "Title", "Year", "Rating", "Genre"),
-            "#streams_table": ("#", "Source", "Quality", "Headers", "URL"),
-            "#subtitle_languages_table": ("#", "Lang", "Count"),
-            "#subtitle_tracks_table": ("#", "Source", "Lang", "Label", "URL"),
+            "#streams_table": ("#", "Source", "Quality", "Audio", "Headers", "URL"),
+            "#subtitle_languages_table": ("#", "Language", "Count"),
+            "#subtitle_tracks_table": ("#", "Source", "Language", "Label", "URL"),
         }
 
         for table_id, columns in table_defs.items():
@@ -387,6 +470,20 @@ class InteractiveTextualApp(App[None]):
             table.cursor_type = "row"
             table.zebra_stripes = True
             table.add_columns(*columns)
+
+    def _configure_player_options(self) -> None:
+        player_select = self.query_one("#player_select", Select)
+        options = [(target.label, target.id) for target in list_playback_targets()]
+        if not options:
+            options = [("Auto (Recommended)", AUTO_TARGET)]
+        player_select.set_options(options)
+
+        default_target = default_playback_target_id()
+        available_values = {str(value) for _, value in options}
+        if default_target in available_values:
+            player_select.value = default_target
+        else:
+            player_select.value = AUTO_TARGET
 
     def action_request_quit(self) -> None:
         self.exit()
@@ -478,6 +575,10 @@ class InteractiveTextualApp(App[None]):
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id == "action_select":
             self._apply_action_ui_state(str(event.value or "stream"))
+            return
+
+        if event.select.id == "player_select":
+            self._update_run_summary()
             return
 
         if event.select.id == "season_select":
@@ -754,10 +855,12 @@ class InteractiveTextualApp(App[None]):
         table = self.query_one("#streams_table", DataTable)
         table.clear(columns=False)
         for index, stream in enumerate(self.resolved_streams, start=1):
+            audio_label = self._stream_audio_label(stream)
             table.add_row(
                 str(index),
                 stream.source,
                 stream.quality or "-",
+                audio_label,
                 "yes" if stream.headers else "no",
                 stream.url[:90],
             )
@@ -784,7 +887,7 @@ class InteractiveTextualApp(App[None]):
         self._update_run_summary()
         if navigate:
             self._set_page("subtitle")
-            self._set_status("Load subtitles, choose language id, then go to Run page.")
+            self._set_status("Load subtitles, choose preferred language, then go to Run page.")
 
     async def _handle_subtitle_fetch(self, *, silent: bool = False) -> bool:
         if self.selected_item is None or self.selected_stream is None:
@@ -794,7 +897,14 @@ class InteractiveTextualApp(App[None]):
 
         source_choice = str(self.query_one("#subtitle_source_select", Select).value or "provider")
         language_text = self.query_one("#subtitle_language_input", Input).value.strip()
-        preferred_language_id = _normalise_language_id(language_text) if language_text else ""
+        preferred_language_id = ""
+        if language_text:
+            candidate = normalize_language_id(language_text)
+            if candidate != "unknown":
+                preferred_language_id = candidate
+                self.preferred_subtitle_language_id = candidate
+        elif self.preferred_subtitle_language_id:
+            preferred_language_id = self.preferred_subtitle_language_id
 
         if source_choice == "none":
             self.selected_subtitles = []
@@ -851,16 +961,20 @@ class InteractiveTextualApp(App[None]):
             self._fill_subtitle_tracks_table(selected)
             self._update_run_summary()
             if not silent:
-                self._set_status(f"Using {len(selected)} subtitles for '{preferred_language_id}'.")
+                display_name = language_display_name(preferred_language_id)
+                self._set_status(f"Using {len(selected)} subtitles for '{display_name}'.")
             return True
 
         first_language = self.subtitle_language_order[0]
+        if self.preferred_subtitle_language_id is None:
+            self.preferred_subtitle_language_id = first_language
         selected = self.subtitles_by_language[first_language]
         self.selected_subtitles = selected
         self._fill_subtitle_tracks_table(selected)
         self._update_run_summary()
         if not silent:
-            self._set_status(f"Choose subtitle language row (default '{first_language}').")
+            display_name = language_display_name(first_language)
+            self._set_status(f"Choose subtitle language row (default '{display_name}').")
         return True
 
     def _handle_subtitle_language_selected(self, row_index: int) -> None:
@@ -869,15 +983,18 @@ class InteractiveTextualApp(App[None]):
 
         language_id = self.subtitle_language_order[row_index]
         selected = self.subtitles_by_language.get(language_id, [])
+        self.preferred_subtitle_language_id = language_id
         self.selected_subtitles = selected
         self._fill_subtitle_tracks_table(selected)
         self._update_run_summary()
-        self._set_status(f"Using {len(selected)} subtitles for '{language_id}'.")
+        display_name = language_display_name(language_id)
+        self._set_status(f"Using {len(selected)} subtitles for '{display_name}'.")
 
     async def _handle_execute(self) -> None:
         action = str(self.query_one("#action_select", Select).value or "stream")
         is_tv_series = bool(self.selected_item and self.selected_item.subjectType == SubjectType.TV_SERIES)
-        is_android_chooser = should_use_android_chooser()
+        selected_player_target = self._selected_player_target_id()
+        uses_android_external_player = is_android_target(selected_player_target)
 
         if action == "download":
             success = await self._handle_download()
@@ -885,13 +1002,23 @@ class InteractiveTextualApp(App[None]):
                 return
 
             if is_tv_series:
-                if self._advance_episode_selector():
-                    self._set_status(
-                        "Download finished. Automatically moved to next episode. "
-                        "Resolve stream and run again."
-                    )
-                else:
-                    self._set_status("Download finished. No more episodes in selected series metadata.")
+
+                async def _on_continue_download() -> bool:
+                    if not self._advance_episode_selector():
+                        self._set_status("Download finished. No more episodes in selected series metadata.")
+                        return False
+                    self._set_status("Download finished. Moved to next episode selector.")
+                    return False
+
+                async def _on_stop_download() -> bool:
+                    self._set_status("Download finished. Stopped at current episode by user choice.")
+                    return False
+
+                await self._confirm_continue_next_episode(
+                    default_continue=False,
+                    on_continue=_on_continue_download,
+                    on_stop=_on_stop_download,
+                )
                 return
 
             self._set_page("home")
@@ -905,17 +1032,29 @@ class InteractiveTextualApp(App[None]):
                 self._set_status("Movie playback finished. Returned to Home page.")
             return
 
-        if is_android_chooser:
+        if uses_android_external_player:
+            current_stream = self.selected_stream
             success = await self._handle_play()
             if not success:
                 return
-            if self._advance_episode_selector():
-                self._set_status(
-                    "Android external player mode cannot detect playback completion. "
-                    "Episode selector moved to next episode for quick run."
-                )
-            else:
-                self._set_status("Android external player mode: reached last known episode.")
+
+            if current_stream is None:
+                self._set_status("Cannot prepare next episode: current stream unavailable.")
+                return
+
+            async def _on_continue_android() -> bool:
+                await self._prepare_next_episode_from_current(current_stream, auto_start=False)
+                return False
+
+            async def _on_stop_android() -> bool:
+                self._set_status("Playback launched. Stopped at current episode by user choice.")
+                return False
+
+            await self._confirm_continue_next_episode(
+                default_continue=False,
+                on_continue=_on_continue_android,
+                on_stop=_on_stop_android,
+            )
             return
 
         while True:
@@ -928,60 +1067,108 @@ class InteractiveTextualApp(App[None]):
             if not success:
                 return
 
-            if not self._advance_episode_selector():
-                self._set_status("Auto-play finished. No more episodes.")
+            async def _on_continue_desktop() -> bool:
+                return await self._prepare_next_episode_from_current(current_stream, auto_start=True)
+
+            async def _on_stop_desktop() -> bool:
+                self._set_status("Playback stopped by user after current episode.")
+                return False
+
+            continue_next = await self._confirm_continue_next_episode(
+                default_continue=True,
+                on_continue=_on_continue_desktop,
+                on_stop=_on_stop_desktop,
+            )
+            if not continue_next:
                 return
-
-            next_resolved = await self._handle_resolve_streams(silent=True)
-            if not next_resolved:
-                self._set_status("Auto-play stopped: unable to resolve next episode streams.")
-                return
-
-            self._select_stream_for_auto_continue(current_stream.source, current_stream.quality)
-
-            await self._handle_subtitle_fetch(silent=True)
-            self._set_page("run")
-            self._set_status("Auto-continue: starting next episode...")
 
     async def _handle_play(self) -> bool:
         if self.selected_stream is None:
             self._set_status("Select stream first.")
             return False
 
-        stream_url = self.selected_stream.url
-        headers = self._merged_request_headers(self.selected_stream.headers)
-        temp_dir: tempfile.TemporaryDirectory[str] | None = None
-        subtitle_paths: list[Path] = []
+        selected_stream = self.selected_stream
+        selected_target = self._selected_player_target_id()
+        subtitle_urls = [subtitle.url for subtitle in self.selected_subtitles if subtitle.url]
+        stream_candidates = self._stream_fallback_candidates(selected_stream)
+        allow_browser_fallback = not is_termux_environment()
+        media_title = self.selected_item.title if self.selected_item else ""
+        last_failure = "all stream and player attempts failed"
 
         self._set_loading(True, "Running action...")
         try:
-            if self.selected_subtitles and not should_use_android_chooser():
-                temp_dir = tempfile.TemporaryDirectory(prefix="moviebox-tui-subtitles-")
-                self.query_one("#loading_label", Static).update("Preparing subtitles...")
-                subtitle_paths = await asyncio.to_thread(
-                    self._download_subtitles_for_playback,
-                    self.selected_subtitles,
-                    Path(temp_dir.name),
-                    headers,
-                )
+            for candidate_index, stream in enumerate(stream_candidates, start=1):
+                headers = self._merged_request_headers(stream.headers)
+                subtitle_paths: list[Path] = []
+                temp_dir: tempfile.TemporaryDirectory[str] | None = None
 
-            if self.selected_subtitles and should_use_android_chooser():
-                self._set_status(
-                    "Android external player mode: external subtitle files are not auto-attached. "
-                    "Use player subtitle feature or switch MOVIEBOX_PLAYBACK_TARGET=mpv-cli."
-                )
+                try:
+                    if self.selected_subtitles and not is_android_target(selected_target):
+                        self.query_one("#loading_label", Static).update("Preparing subtitles...")
+                        temp_dir = tempfile.TemporaryDirectory(prefix="moviebox-tui-subtitles-")
+                        subtitle_paths = await asyncio.to_thread(
+                            self._download_subtitles_for_playback,
+                            self.selected_subtitles,
+                            Path(temp_dir.name),
+                            headers,
+                        )
 
-            self.query_one("#loading_label", Static).update("Launching player...")
-            status = await asyncio.to_thread(play_stream, stream_url, headers, subtitle_paths)
-            self._set_status(status)
-            return True
-        except Exception as exc:
-            self._set_status(f"Playback failed: {exc}")
-            return False
+                    self.query_one("#loading_label", Static).update(
+                        f"Launching player (stream {candidate_index}/{len(stream_candidates)})..."
+                    )
+                    result = await asyncio.to_thread(
+                        play_stream,
+                        stream.url,
+                        headers,
+                        subtitle_paths,
+                        subtitle_urls=subtitle_urls,
+                        target_id=selected_target,
+                        media_title=media_title,
+                        allow_browser_fallback=allow_browser_fallback,
+                    )
+
+                    if result.success:
+                        self.selected_stream = stream
+                        self._update_subtitle_stream_label()
+                        self._update_run_summary()
+                        suffix = f" (fallback stream #{candidate_index})" if candidate_index > 1 else ""
+                        self._set_status(f"{result.message}{suffix}")
+                        return True
+
+                    last_failure = result.message
+
+                    if self.selected_subtitles:
+                        self.query_one("#loading_label", Static).update(
+                            "Retrying launch without subtitle extras..."
+                        )
+                        no_subtitle_result = await asyncio.to_thread(
+                            play_stream,
+                            stream.url,
+                            headers,
+                            [],
+                            subtitle_urls=[],
+                            target_id=selected_target,
+                            media_title=media_title,
+                            allow_browser_fallback=allow_browser_fallback,
+                        )
+                        if no_subtitle_result.success:
+                            self.selected_stream = stream
+                            self._update_subtitle_stream_label()
+                            self._update_run_summary()
+                            suffix = f" (fallback stream #{candidate_index})" if candidate_index > 1 else ""
+                            self._set_status(
+                                f"{no_subtitle_result.message}{suffix} (without external subtitles)"
+                            )
+                            return True
+                        last_failure = no_subtitle_result.message
+                finally:
+                    if temp_dir is not None:
+                        temp_dir.cleanup()
         finally:
             self._set_loading(False)
-            if temp_dir is not None:
-                temp_dir.cleanup()
+
+        self._set_status(f"Playback failed: {last_failure}")
+        return False
 
     async def _handle_download(self) -> bool:
         if self.selected_item is None or self.selected_stream is None:
@@ -1071,23 +1258,40 @@ class InteractiveTextualApp(App[None]):
         self._update_run_summary()
         return True
 
-    def _select_stream_for_auto_continue(self, preferred_source: str, preferred_quality: str | None) -> None:
+    def _select_stream_for_auto_continue(
+        self,
+        preferred_source: str,
+        preferred_quality: str | None,
+        preferred_audio: str | None,
+    ) -> None:
         if not self.resolved_streams:
             self.selected_stream = None
             self._update_subtitle_stream_label()
             self._update_run_summary()
             return
 
+        normalized_preferred_audio = normalize_language_id(preferred_audio)
+
+        def _score(stream) -> int:
+            score = 0
+            if stream.source == preferred_source:
+                score -= 8
+            if stream.quality == preferred_quality:
+                score -= 6
+            stream_audio = normalize_language_id(self._stream_audio_label(stream))
+            if normalized_preferred_audio != "unknown" and stream_audio == normalized_preferred_audio:
+                score -= 10
+            elif stream_audio != "unknown":
+                score -= 2
+            return score
+
         preferred_index = 0
+        best_score: int | None = None
         for index, stream in enumerate(self.resolved_streams):
-            if stream.source == preferred_source and stream.quality == preferred_quality:
+            candidate_score = _score(stream)
+            if best_score is None or candidate_score < best_score:
+                best_score = candidate_score
                 preferred_index = index
-                break
-        else:
-            for index, stream in enumerate(self.resolved_streams):
-                if stream.quality == preferred_quality:
-                    preferred_index = index
-                    break
 
         self._handle_stream_selected(preferred_index, navigate=False)
 
@@ -1188,7 +1392,7 @@ class InteractiveTextualApp(App[None]):
             SubtitleChoice(
                 url=subtitle.url,
                 language=subtitle.language,
-                language_id=_normalise_language_id(subtitle.language),
+                language_id=normalize_language_id(subtitle.language),
                 label=subtitle.label,
                 source=subtitle.source,
             )
@@ -1244,7 +1448,7 @@ class InteractiveTextualApp(App[None]):
                 SubtitleChoice(
                     url=subtitle_url,
                     language=language,
-                    language_id=_normalise_language_id(language),
+                    language_id=normalize_language_id(language),
                     label=label,
                     source="provider",
                 )
@@ -1290,7 +1494,11 @@ class InteractiveTextualApp(App[None]):
         table = self.query_one("#subtitle_languages_table", DataTable)
         table.clear(columns=False)
         for index, language_id in enumerate(self.subtitle_language_order, start=1):
-            table.add_row(str(index), language_id, str(len(self.subtitles_by_language[language_id])))
+            table.add_row(
+                str(index),
+                language_display_name(language_id),
+                str(len(self.subtitles_by_language[language_id])),
+            )
 
     def _fill_subtitle_tracks_table(self, tracks: list[SubtitleChoice]) -> None:
         table = self.query_one("#subtitle_tracks_table", DataTable)
@@ -1299,7 +1507,7 @@ class InteractiveTextualApp(App[None]):
             table.add_row(
                 str(index),
                 subtitle.source,
-                subtitle.language_id,
+                language_display_name(subtitle.language_id),
                 subtitle.label[:46],
                 subtitle.url[:90],
             )
@@ -1317,6 +1525,7 @@ class InteractiveTextualApp(App[None]):
         self.subtitles_by_language = {}
         self.subtitle_language_order = []
         self.selected_subtitles = []
+        self.preferred_subtitle_language_id = None
 
         self.query_one("#streams_table", DataTable).clear(columns=False)
         self._clear_subtitle_tables()
@@ -1340,7 +1549,8 @@ class InteractiveTextualApp(App[None]):
             return
 
         quality = self.selected_stream.quality or "-"
-        label.update(f"Selected stream: {self.selected_stream.source} | quality={quality}")
+        audio = self._stream_audio_label(self.selected_stream)
+        label.update(f"Selected stream: {self.selected_stream.source} | quality={quality} | audio={audio}")
 
     def _update_run_summary(self) -> None:
         summary = self.query_one("#run_summary", Static)
@@ -1353,9 +1563,11 @@ class InteractiveTextualApp(App[None]):
             return
 
         action = str(self.query_one("#action_select", Select).value or "stream")
+        player_target = self._selected_player_label()
         subtitle_count = len(self.selected_subtitles)
         provider_text = self.selected_provider_name or "-"
         quality = self.selected_stream.quality or "-"
+        audio = self._stream_audio_label(self.selected_stream)
         episode_info = ""
         if self.selected_item.subjectType == SubjectType.TV_SERIES:
             season, episode = self._read_season_episode()
@@ -1363,9 +1575,125 @@ class InteractiveTextualApp(App[None]):
                 episode_info = f" | Episode: S{season:02d}E{episode:02d}"
         summary.update(
             f"Title: {self.selected_item.title} | Provider: {provider_text} | "
-            f"Stream: {self.selected_stream.source} [{quality}] | "
-            f"Subtitles selected: {subtitle_count} | Action: {action}{episode_info}"
+            f"Stream: {self.selected_stream.source} [{quality}] | Audio: {audio} | "
+            f"Subtitles selected: {subtitle_count} | Player: {player_target} | Action: {action}{episode_info}"
         )
+
+    def _selected_player_target_id(self) -> str:
+        return str(self.query_one("#player_select", Select).value or AUTO_TARGET)
+
+    def _selected_player_label(self) -> str:
+        target_id = self._selected_player_target_id()
+        for target in list_playback_targets():
+            if target.id == target_id:
+                return target.label
+        return target_id
+
+    @staticmethod
+    def _stream_audio_label(stream) -> str:
+        audio_value = str(getattr(stream, "audio", "")).strip()
+        if audio_value:
+            return audio_value
+
+        audio_tracks = getattr(stream, "audio_tracks", [])
+        if isinstance(audio_tracks, list) and audio_tracks:
+            first_track = str(audio_tracks[0]).strip()
+            if first_track:
+                return first_track
+
+        source = str(getattr(stream, "source", "")).strip()
+        matched = re.search(r"\[([^\]]+)\]\s*$", source)
+        if matched:
+            return matched.group(1).split("/")[0].strip()
+
+        return "-"
+
+    def _stream_fallback_candidates(self, selected_stream) -> list:
+        if not self.resolved_streams:
+            return [selected_stream]
+
+        preferred_audio = normalize_language_id(self._stream_audio_label(selected_stream))
+        preferred_quality = str(getattr(selected_stream, "quality", "") or "").strip().lower()
+        preferred_source = str(getattr(selected_stream, "source", "") or "").strip().lower()
+        preferred_url = str(getattr(selected_stream, "url", "") or "").strip()
+
+        scored: list[tuple[int, int, object]] = []
+        for index, stream in enumerate(self.resolved_streams):
+            stream_url = str(getattr(stream, "url", "") or "").strip()
+            stream_source = str(getattr(stream, "source", "") or "").strip().lower()
+            stream_quality = str(getattr(stream, "quality", "") or "").strip().lower()
+            stream_audio = normalize_language_id(self._stream_audio_label(stream))
+
+            rank = 100
+            if stream_url and stream_url == preferred_url:
+                rank -= 60
+            if stream_source == preferred_source:
+                rank -= 20
+            if stream_quality and stream_quality == preferred_quality:
+                rank -= 12
+            if preferred_audio != "unknown" and stream_audio == preferred_audio:
+                rank -= 15
+            elif stream_audio != "unknown":
+                rank -= 3
+
+            scored.append((rank, index, stream))
+
+        scored.sort(key=lambda item: (item[0], item[1]))
+        return [stream for _, _, stream in scored]
+
+    async def _confirm_continue_next_episode(
+        self,
+        *,
+        default_continue: bool,
+        on_continue: Callable[[], Awaitable[bool]] | None = None,
+        on_stop: Callable[[], Awaitable[bool]] | None = None,
+    ) -> bool:
+        season, episode = self._read_season_episode()
+        if season is None or episode is None:
+            return default_continue
+
+        async def _default_on_continue() -> bool:
+            return True
+
+        async def _default_on_stop() -> bool:
+            return False
+
+        message = f"Current selection S{season:02d}E{episode:02d}. Continue to next episode?"
+        try:
+            answer = await self.push_screen_wait(
+                ContinuePromptScreen(
+                    message,
+                    on_continue=on_continue or _default_on_continue,
+                    on_stop=on_stop or _default_on_stop,
+                )
+            )
+            return bool(answer)
+        except Exception:
+            return default_continue
+
+    async def _prepare_next_episode_from_current(self, current_stream, *, auto_start: bool) -> bool:
+        if not self._advance_episode_selector():
+            self._set_status("Reached last known episode in metadata.")
+            return False
+
+        next_resolved = await self._handle_resolve_streams(silent=True)
+        if not next_resolved:
+            self._set_status("Unable to resolve next episode streams.")
+            return False
+
+        self._select_stream_for_auto_continue(
+            current_stream.source,
+            current_stream.quality,
+            self._stream_audio_label(current_stream),
+        )
+
+        await self._handle_subtitle_fetch(silent=True)
+        self._set_page("run")
+        if auto_start:
+            self._set_status("Auto-continue: starting next episode...")
+        else:
+            self._set_status("Prepared next episode. Press Run when ready.")
+        return True
 
     def _set_page(self, page: str) -> None:
         if page not in self.PAGES:
@@ -1408,13 +1736,16 @@ class InteractiveTextualApp(App[None]):
 
     def _apply_action_ui_state(self, action: str) -> None:
         output_dir_input = self.query_one("#output_dir_input", Input)
+        player_select = self.query_one("#player_select", Select)
         run_hint = self.query_one("#run_hint", Static)
         if action == "download":
             output_dir_input.remove_class("hidden")
+            player_select.add_class("hidden")
             run_hint.update("Download mode: saves media and selected subtitle files.")
         else:
             output_dir_input.add_class("hidden")
-            run_hint.update("Stream mode: launches player / Android chooser.")
+            player_select.remove_class("hidden")
+            run_hint.update("Stream mode: pick player target and run with stream fallback.")
 
         self._update_run_summary()
 
