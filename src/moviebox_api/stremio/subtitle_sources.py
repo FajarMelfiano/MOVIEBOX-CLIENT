@@ -16,6 +16,9 @@ SUBDL_API_KEY_ENV = "MOVIEBOX_SUBDL_API_KEY"
 SUBSOURCE_API_KEY_ENV = "MOVIEBOX_SUBSOURCE_API_KEY"
 SUBTITLE_PROXY_URL_ENV = "MOVIEBOX_SUBTITLE_PROXY_URL"
 SUBTITLE_PROXY_AUTH_TOKEN_ENV = "MOVIEBOX_SUBTITLE_PROXY_AUTH_TOKEN"
+SUBTITLE_PROXY_DISABLE_ENV = "MOVIEBOX_SUBTITLE_PROXY_DISABLE"
+
+_DEFAULT_SUBTITLE_PROXY_URL = "https://roowyrmfytbldcdvagbp.supabase.co/functions/v1/subtitle-proxy"
 
 _OPEN_SUBTITLES_URL = "https://opensubtitles-v3.strem.io"
 _SUBDL_BASE_URL = "https://subdl.strem.top"
@@ -102,7 +105,15 @@ def subtitle_source_is_configured(source_name: str) -> bool:
 
 
 def subtitle_proxy_url() -> str:
-    return os.getenv(SUBTITLE_PROXY_URL_ENV, "").strip()
+    disabled_value = os.getenv(SUBTITLE_PROXY_DISABLE_ENV, "").strip().lower()
+    if disabled_value in {"1", "true", "yes", "on"}:
+        return ""
+
+    configured = os.getenv(SUBTITLE_PROXY_URL_ENV, "").strip()
+    if configured:
+        return configured
+
+    return _DEFAULT_SUBTITLE_PROXY_URL
 
 
 def subtitle_proxy_is_configured() -> bool:
@@ -171,13 +182,13 @@ async def _fetch_subtitle_proxy(
     if isinstance(body, list):
         raw_subtitles = list(body)
     elif isinstance(body, dict):
-        raw_subtitles = body.get("subtitles")
-        if not isinstance(raw_subtitles, list):
-            raw_subtitles = body.get("results")
-        if not isinstance(raw_subtitles, list):
-            raw_subtitles = body.get("data")
-        if not isinstance(raw_subtitles, list):
-            raw_subtitles = []
+        raw_subtitles_candidate = body.get("subtitles")
+        if not isinstance(raw_subtitles_candidate, list):
+            raw_subtitles_candidate = body.get("results")
+        if not isinstance(raw_subtitles_candidate, list):
+            raw_subtitles_candidate = body.get("data")
+        if isinstance(raw_subtitles_candidate, list):
+            raw_subtitles = list(raw_subtitles_candidate)
 
         raw_errors_candidate = body.get("errors")
         if isinstance(raw_errors_candidate, list):
@@ -427,6 +438,7 @@ async def fetch_external_subtitles(
         source_name for source_name in requested_sources if source_name in {"subdl", "subsource"}
     ]
     use_proxy = subtitle_proxy_is_configured() and bool(proxy_sources)
+    proxy_handled_sources: set[str] = set()
 
     if use_proxy:
         try:
@@ -443,13 +455,15 @@ async def fetch_external_subtitles(
 
         source_errors.extend(proxy_errors)
         for subtitle in proxy_subtitles:
+            if subtitle.source in {"subdl", "subsource"}:
+                proxy_handled_sources.add(subtitle.source)
             if subtitle.url in seen_urls:
                 continue
             seen_urls.add(subtitle.url)
             subtitles.append(subtitle)
 
     for source_name in requested_sources:
-        if use_proxy and source_name in {"subdl", "subsource"}:
+        if use_proxy and source_name in {"subdl", "subsource"} and source_name in proxy_handled_sources:
             continue
 
         try:

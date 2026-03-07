@@ -281,3 +281,19 @@ moviebox secret-set MOVIEBOX_SUBDL_API_KEY
 moviebox secret-set MOVIEBOX_SUBSOURCE_API_KEY
 moviebox secret-status
 ```
+
+### Subtitle proxy mode (Supabase)
+
+- `subdl` and `subsource` default to a hosted Supabase proxy endpoint in this project.
+- Override proxy endpoint (or point to your own project):
+
+```bash
+export MOVIEBOX_SUBTITLE_PROXY_URL="https://<your-project>.supabase.co/functions/v1/subtitle-proxy"
+export MOVIEBOX_SUBTITLE_PROXY_AUTH_TOKEN="<optional-token>"
+```
+
+- Disable proxy mode and use local API keys only:
+
+```bash
+export MOVIEBOX_SUBTITLE_PROXY_DISABLE=1
+```

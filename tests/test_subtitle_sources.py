@@ -6,8 +6,14 @@ from moviebox_api.stremio.subtitle_sources import (
     _normalise_language_code,
     _preferred_language_codes,
     fetch_external_subtitles,
+    subtitle_proxy_url,
     subtitle_source_is_configured,
 )
+
+
+@pytest.fixture(autouse=True)
+def _disable_default_proxy(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("MOVIEBOX_SUBTITLE_PROXY_DISABLE", "1")
 
 
 def test_normalise_language_code_prefers_iso639_1_codes():
@@ -26,6 +32,14 @@ def test_preferred_language_codes_respects_language_aliases():
 
 def test_preferred_language_codes_appends_fallback_languages():
     assert _preferred_language_codes(["indonesian"]) == ["id", "en"]
+
+
+def test_subtitle_proxy_url_uses_default_proxy_when_not_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("MOVIEBOX_SUBTITLE_PROXY_DISABLE", raising=False)
+    monkeypatch.delenv("MOVIEBOX_SUBTITLE_PROXY_URL", raising=False)
+    assert subtitle_proxy_url().startswith("https://roowyrmfytbldcdvagbp.supabase.co/")
 
 
 @pytest.mark.asyncio
@@ -77,6 +91,7 @@ async def test_fetch_external_subtitles_ignores_one_source_error_if_others_succe
 def test_subtitle_source_is_configured_uses_proxy_without_local_keys(
     monkeypatch: pytest.MonkeyPatch,
 ):
+    monkeypatch.delenv("MOVIEBOX_SUBTITLE_PROXY_DISABLE", raising=False)
     monkeypatch.setenv("MOVIEBOX_SUBTITLE_PROXY_URL", "https://example.com/subtitle-proxy")
     monkeypatch.setattr(subtitle_sources, "get_secret", lambda *_args, **_kwargs: "")
 
@@ -88,6 +103,7 @@ def test_subtitle_source_is_configured_uses_proxy_without_local_keys(
 async def test_fetch_external_subtitles_prefers_proxy_for_subdl_and_subsource(
     monkeypatch: pytest.MonkeyPatch,
 ):
+    monkeypatch.delenv("MOVIEBOX_SUBTITLE_PROXY_DISABLE", raising=False)
     monkeypatch.setenv("MOVIEBOX_SUBTITLE_PROXY_URL", "https://example.com/subtitle-proxy")
 
     async def _proxy_fetch(*_args, **_kwargs):

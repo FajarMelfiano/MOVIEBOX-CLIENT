@@ -219,3 +219,4 @@ commit-msg*
 *.html
 *.part
 temp/
+supabase/.temp/
