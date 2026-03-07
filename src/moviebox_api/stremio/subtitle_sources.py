@@ -28,6 +28,7 @@ _DEFAULT_HEADERS = {
     "Accept-Language": "en-US,en;q=0.5",
 }
 
+_SUBDL_KEY_VALIDATION_CACHE: dict[str, bool] = {}
 _SUBSOURCE_KEY_VALIDATION_CACHE: dict[str, bool] = {}
 
 
@@ -155,6 +156,9 @@ async def _fetch_subdl(
     if not api_key:
         return []
 
+    if not await _is_subdl_api_key_valid(api_key):
+        raise RuntimeError("SubDL API key is invalid or expired")
+
     language_codes = _preferred_language_codes(preferred_languages)
     config_path = _build_subdl_config_path(api_key, language_codes)
     url = f"{_SUBDL_BASE_URL}/{config_path}/subtitles/{content_type}/{video_id}.json"
@@ -178,6 +182,33 @@ async def _fetch_subdl(
         mapped.append(subtitle)
 
     return mapped
+
+
+async def _is_subdl_api_key_valid(api_key: str) -> bool:
+    cached = _SUBDL_KEY_VALIDATION_CACHE.get(api_key)
+    if cached is not None:
+        return cached
+
+    validation_url = "https://api.subdl.com/api/v1/subtitles"
+    try:
+        async with httpx.AsyncClient(
+            headers=_DEFAULT_HEADERS,
+            follow_redirects=True,
+            timeout=httpx.Timeout(15.0),
+        ) as client:
+            response = await client.get(
+                validation_url,
+                params={"api_key": api_key, "film_name": "Inception"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+            is_valid = bool(isinstance(payload, dict) and payload.get("status") is True)
+    except Exception:
+        # Do not hard-fail on temporary network issues.
+        is_valid = True
+
+    _SUBDL_KEY_VALIDATION_CACHE[api_key] = is_valid
+    return is_valid
 
 
 async def _fetch_subsource(

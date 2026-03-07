@@ -916,11 +916,14 @@ class InteractiveTextualApp(App[None]):
             return True
 
         subtitles: list[SubtitleChoice] = []
+        external_fetch_error_message = ""
         if source_choice in {"provider", "all"}:
             subtitles.extend(self._collect_provider_subtitles())
 
         if source_choice in {"opensubtitles", "subdl", "subsource", "all"}:
             sources = self._resolve_external_sources(source_choice)
+            if not sources and source_choice in {"subdl", "subsource"}:
+                return False
             if sources:
                 self._set_loading(True, "Fetching external subtitles...")
                 try:
@@ -930,8 +933,9 @@ class InteractiveTextualApp(App[None]):
                     )
                     subtitles.extend(fetched_external)
                 except Exception as exc:
+                    external_fetch_error_message = f"External subtitle fetch failed: {exc}"
                     if not silent:
-                        self._set_status(f"External subtitle fetch failed: {exc}")
+                        self._set_status(external_fetch_error_message)
                 finally:
                     self._set_loading(False)
 
@@ -955,7 +959,10 @@ class InteractiveTextualApp(App[None]):
             self._fill_subtitle_tracks_table([])
             self._update_run_summary()
             if not silent:
-                self._set_status("No subtitle matches found.")
+                if external_fetch_error_message:
+                    self._set_status(external_fetch_error_message)
+                else:
+                    self._set_status("No subtitle matches found.")
             return False
 
         if preferred_language_id and preferred_language_id in self.subtitles_by_language:

@@ -2,7 +2,7 @@ from datetime import date
 from types import SimpleNamespace
 
 import pytest
-from textual.widgets import ContentSwitcher, DataTable, Input, Select
+from textual.widgets import ContentSwitcher, DataTable, Input, Select, Static
 
 from moviebox_api.constants import SubjectType
 from moviebox_api.stremio.catalog import StremioSearchItem
@@ -305,3 +305,54 @@ async def test_android_subtitle_attempts_vlc_prioritizes_provider_subtitles():
         assert attempts[0] == ["https://provider.example/sub-ind.srt"]
         assert attempts[1] == ["https://external.example/sub-ind.srt"]
         assert attempts[-1] == []
+
+
+@pytest.mark.asyncio
+async def test_subtitle_fetch_preserves_external_error_status(monkeypatch: pytest.MonkeyPatch):
+    app = InteractiveTextualApp()
+
+    movie_item = StremioSearchItem(
+        subjectId="tt0816692",
+        subjectType=SubjectType.MOVIES,
+        title="Interstellar",
+        description="",
+        releaseDate=date(2014, 1, 1),
+        imdbRatingValue=8.7,
+        genre=["Sci-Fi"],
+        imdbId="tt0816692",
+        releaseInfo="2014",
+        page_url="https://www.imdb.com/title/tt0816692/",
+        stremioType="movie",
+        metadata={},
+    )
+
+    async with app.run_test() as _pilot:
+        app.selected_item = movie_item
+        app.selected_stream = SimpleNamespace(
+            url="https://example.com/video.mp4",
+            headers={},
+            source="provider",
+            quality="1080p",
+            audio="English",
+            audio_tracks=["English"],
+            subtitles=[],
+        )
+        app.query_one("#subtitle_source_select", Select).value = "subdl"
+
+        captured_status: list[str] = []
+
+        def _capture_status(message: str) -> None:
+            captured_status.append(message)
+
+        monkeypatch.setattr(app, "_set_status", _capture_status)
+
+        monkeypatch.setattr(app, "_resolve_external_sources", lambda *_args, **_kwargs: ["subdl"])
+
+        async def _raise_external(*_args, **_kwargs):
+            raise RuntimeError("subdl: SubDL API key is invalid or expired")
+
+        monkeypatch.setattr(app, "_fetch_external_subtitles", _raise_external)
+
+        loaded = await app._handle_subtitle_fetch(silent=False)
+        assert loaded is False
+        assert any("External subtitle fetch failed" in status for status in captured_status)
