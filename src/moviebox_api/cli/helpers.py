@@ -239,17 +239,22 @@ def show_any_help(exception: Exception, exception_msg: str) -> int:
     return exit_code
 
 
-def stream_video_via_mpv(url: str, subtitle_details_items: list[DownloadedFile], subtitles_dir: str, aspect_ratio: str = "no"):
+def stream_video_via_mpv(
+    url: str,
+    subtitle_details_items: list[DownloadedFile],
+    subtitles_dir: str,
+    aspect_ratio: str = "no",
+):
     try:
         # Create an MPV command with properly formatted headers
         mpv_cmd = ["mpv"]
         # Disable youtube-dl/yt-dlp since we're streaming a direct video URL
         mpv_cmd.append("--no-ytdl")
-        
+
         # Add aspect ratio if specified
         if aspect_ratio != "no":
             mpv_cmd.append(f"--video-aspect-override={aspect_ratio}")
-        
+
         for header_name, header_value in DOWNLOAD_REQUEST_HEADERS.items():
             mpv_cmd.append(f"--http-header-fields={header_name}: {header_value}")
 

@@ -33,7 +33,7 @@ from moviebox_api.download import (
 )
 from moviebox_api.exceptions import ZeroCaptionFileError
 from moviebox_api.helpers import assert_instance, assert_membership, get_event_loop
-from moviebox_api.models import SearchResultsItem
+from moviebox_api.models import DownloadableFilesMetadata, MediaFileMetadata, SearchResultsItem
 
 __all__ = ["Downloader"]
 
@@ -50,6 +50,65 @@ class Downloader:
         self._session = session if session else Session()
         assert_instance(self._session, Session, "session")
 
+    @staticmethod
+    def _normalise_audio_label(audio_label: str | None) -> str:
+        if not audio_label:
+            return ""
+        return audio_label.strip().lower()
+
+    @classmethod
+    def _matches_audio_filter(cls, media_file: MediaFileMetadata, requested_audio: str) -> bool:
+        requested = cls._normalise_audio_label(requested_audio)
+        if not requested:
+            return True
+
+        available = cls._normalise_audio_label(media_file.audio)
+        if not available:
+            return False
+
+        return requested in available or available in requested
+
+    @classmethod
+    def _resolve_target_media_file(
+        cls,
+        downloadable_details: DownloadableFilesMetadata,
+        quality: DownloadQualitiesType,
+        requested_audio: str | None,
+    ) -> MediaFileMetadata:
+        normalized_audio = cls._normalise_audio_label(requested_audio)
+        if not normalized_audio:
+            return resolve_media_file_to_be_downloaded(quality, downloadable_details)
+
+        downloads_with_audio = [
+            media_file
+            for media_file in downloadable_details.downloads
+            if isinstance(media_file.audio, str) and media_file.audio.strip()
+        ]
+        if not downloads_with_audio:
+            return resolve_media_file_to_be_downloaded(quality, downloadable_details)
+
+        filtered_downloads = [
+            media_file
+            for media_file in downloads_with_audio
+            if cls._matches_audio_filter(media_file, normalized_audio)
+        ]
+
+        if not filtered_downloads:
+            available_audio = sorted(
+                {
+                    media_file.audio.strip()
+                    for media_file in downloads_with_audio
+                    if isinstance(media_file.audio, str) and media_file.audio.strip()
+                }
+            )
+            available = ", ".join(available_audio) if available_audio else "none"
+            raise ValueError(
+                f"Requested audio '{requested_audio}' was not found. Available audio tracks: {available}"
+            )
+
+        filtered_details = downloadable_details.model_copy(update={"downloads": filtered_downloads})
+        return resolve_media_file_to_be_downloaded(quality, filtered_details)
+
     async def download_movie(
         self,
         title: str,
@@ -61,6 +120,7 @@ class Downloader:
         movie_filename_tmpl: str = MediaFileDownloader.movie_filename_template,
         caption_filename_tmpl: str = CaptionFileDownloader.movie_filename_template,
         language: tuple[str] = (DEFAULT_CAPTION_LANGUAGE,),
+        audio: str | None = None,
         download_caption: bool = False,
         caption_only: bool = False,
         stream_via: Literal["mpv", "vlc"] | None = None,
@@ -130,7 +190,7 @@ class Downloader:
 
         downloadable_details = await downloadable_details_inst.get_content_model()
 
-        target_media_file = resolve_media_file_to_be_downloaded(quality, downloadable_details)
+        target_media_file = self._resolve_target_media_file(downloadable_details, quality, audio)
 
         subtitle_details_items: list[DownloadedFile] = []
 
@@ -199,6 +259,7 @@ class Downloader:
         episode_filename_tmpl: str = MediaFileDownloader.series_filename_template,
         caption_filename_tmpl: str = CaptionFileDownloader.series_filename_template,
         language: tuple = (DEFAULT_CAPTION_LANGUAGE,),
+        audio: str | None = None,
         download_caption: bool = False,
         caption_only: bool = False,
         stream_via: Literal["mpv", "vlc"] | None = None,
@@ -360,7 +421,7 @@ class Downloader:
 
                 current_episode_details["captions"] = caption_details_items
 
-                target_media_file = resolve_media_file_to_be_downloaded(quality, downloadable_files_detail)
+                target_media_file = self._resolve_target_media_file(downloadable_files_detail, quality, audio)
 
                 if stream_via:
                     media_player_name_func_map[stream_via](
@@ -459,7 +520,20 @@ class Downloader:
             return response_jar
 
         else:
-            target_season = series_resource.get_season_by_number(season)
+            try:
+                target_season = series_resource.get_season_by_number(season)
+            except ValueError:
+                if not series_resource.seasons:
+                    raise
+
+                fallback_season = sorted(series_resource.seasons, key=lambda current: current.se)[0]
+                logging.warning(
+                    "Requested season %s is unavailable. Falling back to season %s.",
+                    season,
+                    fallback_season.se,
+                )
+                season = fallback_season.se
+                target_season = fallback_season
 
             assert episode <= target_season.maxEp, (
                 f"The chosen episode offset {episode} exceeds the available episodes {target_season.maxEp}"

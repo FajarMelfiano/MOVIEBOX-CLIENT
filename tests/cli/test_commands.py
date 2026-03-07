@@ -34,6 +34,13 @@ def test_version():
         ["homepage-content --help"],
         ["popular-search --help"],
         ["item-details --help"],
+        ["interactive --help"],
+        ["interactive-tui --help"],
+        ["secret-set --help"],
+        ["secret-unset --help"],
+        ["secret-status --help"],
+        ["source-streams --help"],
+        ["vega-providers --help"],
     ],
 )
 def test_help(command):

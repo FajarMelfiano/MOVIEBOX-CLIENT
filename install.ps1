@@ -1,119 +1,142 @@
-# Moviebox Enhanced - Windows PowerShell Installation Script
-# Enhanced TUI with streamlined UX and animation search
+$ErrorActionPreference = "Stop"
 
-Write-Host ""
-Write-Host "╔══════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║                                          ║" -ForegroundColor Cyan
-Write-Host "║  🎬 MOVIEBOX ENHANCED - INSTALLER        ║" -ForegroundColor Cyan
-Write-Host "║                                          ║" -ForegroundColor Cyan
-Write-Host "╚══════════════════════════════════════════╝" -ForegroundColor Cyan
-Write-Host ""
+$ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+Set-Location $ProjectRoot
 
-# Check Python
-Write-Host "[1/6] Checking Python installation..." -ForegroundColor Blue
-try {
-    $pythonVersion = python --version 2>&1
-    Write-Host "✓ Found $pythonVersion" -ForegroundColor Green
-} catch {
-    Write-Host "❌ Python not found!" -ForegroundColor Red
-    Write-Host ""
-    Write-Host "Please install Python 3.9+ from:" -ForegroundColor Yellow
-    Write-Host "  https://www.python.org/downloads/" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "Make sure to check 'Add Python to PATH' during installation!" -ForegroundColor Yellow
-    pause
-    exit 1
-}
-Write-Host ""
-
-# Check pip
-Write-Host "[2/6] Checking pip..." -ForegroundColor Blue
-try {
-    $pipVersion = python -m pip --version 2>&1
-    Write-Host "✓ pip available" -ForegroundColor Green
-} catch {
-    Write-Host "⚠ pip not found, installing..." -ForegroundColor Yellow
-    python -m ensurepip --default-pip
-}
-Write-Host ""
-
-# Create virtual environment
-Write-Host "[3/6] Setting up virtual environment..." -ForegroundColor Blue
-if (Test-Path ".venv") {
-    Write-Host "⚠ .venv already exists, using existing environment" -ForegroundColor Yellow
-} else {
-    Write-Host "Creating new virtual environment..."
-    python -m venv .venv
-    Write-Host "✓ Virtual environment created" -ForegroundColor Green
-}
-Write-Host ""
-
-# Activate virtual environment
-Write-Host "[4/6] Activating environment..." -ForegroundColor Blue
-& .\.venv\Scripts\Activate.ps1
-Write-Host "✓ Environment activated" -ForegroundColor Green
-Write-Host ""
-
-# Upgrade pip
-Write-Host "[5/6] Upgrading pip..." -ForegroundColor Blue
-python -m pip install --upgrade pip --quiet
-Write-Host "✓ pip upgraded" -ForegroundColor Green
-Write-Host ""
-
-# Install package
-Write-Host "[6/6] Installing moviebox-api..." -ForegroundColor Blue
-Write-Host "This may take a minute..."
-python -m pip install -e ".[cli]" --quiet
-
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "✓ Installation complete!" -ForegroundColor Green
-} else {
-    Write-Host "❌ Installation failed!" -ForegroundColor Red
-    pause
-    exit 1
-}
-Write-Host ""
-
-# Check optional dependencies
-Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
-Write-Host "Optional: Media Players (for streaming)" -ForegroundColor Yellow
-Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
-Write-Host ""
-
-if (Get-Command mpv -ErrorAction SilentlyContinue) {
-    Write-Host "✓ MPV player found" -ForegroundColor Green
-} else {
-    Write-Host "⚠ MPV not found - Download for streaming:" -ForegroundColor Yellow
-    Write-Host "  https://mpv.io/installation/" -ForegroundColor Cyan
+function Write-Step {
+    param([string]$Message)
+    Write-Host "[step] $Message" -ForegroundColor Blue
 }
 
-if (Get-Command vlc -ErrorAction SilentlyContinue) {
-    Write-Host "✓ VLC player found" -ForegroundColor Green
+function Write-Ok {
+    param([string]$Message)
+    Write-Host "[ok] $Message" -ForegroundColor Green
 }
 
+function Write-Warn {
+    param([string]$Message)
+    Write-Host "[warn] $Message" -ForegroundColor Yellow
+}
+
+function Throw-InstallError {
+    param([string]$Message)
+    Write-Host "[error] $Message" -ForegroundColor Red
+    throw $Message
+}
+
+function Add-ShellIntegration {
+    if ($env:MOVIEBOX_SKIP_SHELL_SETUP -eq "1") {
+        Write-Warn "Skipping shell integration because MOVIEBOX_SKIP_SHELL_SETUP=1"
+        return
+    }
+
+    $profileDir = Split-Path -Parent $PROFILE
+    if (-not (Test-Path $profileDir)) {
+        New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
+    }
+    if (-not (Test-Path $PROFILE)) {
+        New-Item -ItemType File -Path $PROFILE -Force | Out-Null
+    }
+
+    $marker = "# >>> moviebox shell setup >>>"
+    $content = Get-Content -Path $PROFILE -Raw
+    if ($content -like "*$marker*") {
+        Write-Ok "Shell integration already exists in $PROFILE"
+        return
+    }
+
+    $escapedRoot = $ProjectRoot.Replace("'", "''")
+    $blockTemplate = @'
+# >>> moviebox shell setup >>>
+$env:MOVIEBOX_PROJECT_ROOT = '__MOVIEBOX_PROJECT_ROOT__'
+if (-not (Get-Variable -Name MovieboxOriginalPrompt -Scope Global -ErrorAction SilentlyContinue)) {
+    $global:MovieboxOriginalPrompt = $function:prompt
+    function global:prompt {
+        $repo = $env:MOVIEBOX_PROJECT_ROOT
+        if ($repo -and $pwd.Path.StartsWith($repo, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $activateScript = Join-Path $repo ".venv\Scripts\Activate.ps1"
+            if (-not $env:VIRTUAL_ENV -and (Test-Path $activateScript)) {
+                & $activateScript | Out-Null
+                $global:MovieboxAutoVenvActive = $true
+            }
+        }
+        elseif ($global:MovieboxAutoVenvActive -and $env:VIRTUAL_ENV) {
+            if (Get-Command deactivate -ErrorAction SilentlyContinue) {
+                deactivate
+            }
+            $global:MovieboxAutoVenvActive = $false
+        }
+        & $global:MovieboxOriginalPrompt
+    }
+}
+$movieboxBinary = Join-Path $env:MOVIEBOX_PROJECT_ROOT ".venv\Scripts\moviebox.exe"
+if (Test-Path $movieboxBinary) {
+    (& {
+        $env:_MOVIEBOX_COMPLETE = "powershell_source"
+        & $movieboxBinary
+    }) | Out-String | Invoke-Expression
+    Remove-Item Env:_MOVIEBOX_COMPLETE -ErrorAction SilentlyContinue
+}
+# <<< moviebox shell setup <<<
+'@
+    $block = $blockTemplate.Replace('__MOVIEBOX_PROJECT_ROOT__', $escapedRoot)
+
+    Add-Content -Path $PROFILE -Value "`r`n$block`r`n"
+    Write-Ok "Added auto-venv and completion to $PROFILE"
+}
+
+Write-Host "Moviebox installer (Windows PowerShell)" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
-Write-Host "✅ Installation Complete!" -ForegroundColor Green
-Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+
+Write-Step "Checking Python"
+$python = Get-Command python -ErrorAction SilentlyContinue
+if (-not $python) {
+    Throw-InstallError "Python 3.10+ is required. Install from https://www.python.org/downloads/"
+}
+
+$pythonVersionRaw = (& python --version) 2>&1
+$match = [regex]::Match($pythonVersionRaw, "(\d+)\.(\d+)")
+if (-not $match.Success) {
+    Throw-InstallError "Unable to parse Python version: $pythonVersionRaw"
+}
+
+$major = [int]$match.Groups[1].Value
+$minor = [int]$match.Groups[2].Value
+if ($major -lt 3 -or ($major -eq 3 -and $minor -lt 10)) {
+    Throw-InstallError "Python 3.10+ is required (detected: $pythonVersionRaw)"
+}
+Write-Ok "Using $pythonVersionRaw"
+
+Write-Step "Creating virtual environment"
+if (Test-Path ".venv\Scripts\python.exe") {
+    Write-Ok "Reusing existing .venv"
+}
+else {
+    & python -m venv .venv
+    Write-Ok "Created .venv"
+}
+
+$venvPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+$movieboxBinary = Join-Path $ProjectRoot ".venv\Scripts\moviebox.exe"
+
+Write-Step "Upgrading pip"
+& $venvPython -m pip install --upgrade pip
+Write-Ok "pip upgraded"
+
+Write-Step "Installing moviebox with CLI extras"
+& $venvPython -m pip install -e ".[cli]"
+Write-Ok "moviebox installed"
+
+Write-Step "Configuring shell integration"
+Add-ShellIntegration
+
+Write-Step "Verifying CLI entrypoint"
+& $movieboxBinary --help | Out-Null
+Write-Ok "moviebox CLI is ready"
+
 Write-Host ""
-Write-Host "📝 Quick Start:" -ForegroundColor Yellow
-Write-Host ""
-Write-Host "  1. Activate environment:" 
-Write-Host "     .\.venv\Scripts\Activate.ps1" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "  2. Run interactive menu:"
-Write-Host "     moviebox interactive" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "  3. Or download directly:"
-Write-Host "     moviebox download-movie `"Avatar`"" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "🎬 Features:" -ForegroundColor Yellow
-Write-Host "  • Direct episode access for TV series"
-Write-Host "  • Animation search tab"
-Write-Host "  • Smart pagination"
-Write-Host "  • 10+ subtitle languages"
-Write-Host "  • Quality selection (BEST/1080P/720P/480P)"
-Write-Host ""
-Write-Host "Happy watching! 🍿" -ForegroundColor Green
-Write-Host ""
-pause
+Write-Host "Install complete." -ForegroundColor Green
+Write-Host "- Open a new PowerShell window to enable auto-venv + completion."
+Write-Host "- Run now: .\.venv\Scripts\Activate.ps1; moviebox interactive-tui" -ForegroundColor Cyan
+Write-Host "- Legacy menu is still available: moviebox interactive" -ForegroundColor Cyan
+Write-Host "- Disable shell setup on rerun with: `$env:MOVIEBOX_SKIP_SHELL_SETUP='1'; .\install.ps1" -ForegroundColor Cyan

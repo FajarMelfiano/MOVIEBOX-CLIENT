@@ -1,253 +1,265 @@
-# Moviebox Enhanced - Installation Guide
+# Installation Guide
 
-Complete installation guide for all platforms.
+This guide covers installation for Linux, macOS, Windows, and Termux.
 
-## 📦 Installation Methods
+## Requirements
 
-### 🐧 Linux
+- Python 3.10 or newer
+- Git
+- Optional for streaming: `mpv` or `vlc`
+
+## 1) Quick install scripts
+
+### Linux / macOS
 
 ```bash
-# Clone your fork
 git clone https://github.com/orionbyte-85/moviebox-api.git
 cd moviebox-api
-
-# Run installer
 chmod +x install.sh
 ./install.sh
-
-# Activate and run
-source .venv/bin/activate
-moviebox interactive
 ```
 
-**One-liner install:**
-```bash
-git clone https://github.com/orionbyte-85/moviebox-api.git && cd moviebox-api && chmod +x install.sh && ./install.sh
-```
-
----
-
-### 🍎 macOS
-
-Same as Linux:
+Run:
 
 ```bash
-# Clone your fork
-git clone https://github.com/orionbyte-85/moviebox-api.git
-cd moviebox-api
-
-# Run installer
-chmod +x install.sh
-./install.sh
-
-# Activate and run
-source .venv/bin/activate
-moviebox interactive
+moviebox interactive-tui
 ```
 
-**Optional - Install MPV for streaming:**
-```bash
-brew install mpv
-```
-
----
-
-### 🪟 Windows
-
-#### Method 1: PowerShell (Recommended)
+### Windows PowerShell (recommended)
 
 ```powershell
-# Clone your fork
 git clone https://github.com/orionbyte-85/moviebox-api.git
 cd moviebox-api
-
-# Run installer
 .\install.ps1
-
-# Activate and run
-.\.venv\Scripts\Activate.ps1
-moviebox interactive
 ```
 
-#### Method 2: Command Prompt
+Run:
+
+```powershell
+moviebox interactive-tui
+```
+
+### Windows CMD
 
 ```cmd
-REM Clone your fork
 git clone https://github.com/orionbyte-85/moviebox-api.git
 cd moviebox-api
-
-REM Run installer
 install.bat
+```
 
-REM Activate and run
+Run:
+
+```cmd
 .venv\Scripts\activate.bat
-moviebox interactive
+moviebox interactive-tui
 ```
 
-**Note:** If you get security warnings:
-```powershell
-# Run PowerShell as Administrator, then:
-Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
-```
-
----
-
-### 📱 Android (Termux)
+### Termux (Android)
 
 ```bash
-# Install Termux from F-Droid (NOT Play Store!)
-# Open Termux and run:
-
-# Install git
-pkg install git
-
-# Clone your fork
+pkg install git -y
 git clone https://github.com/orionbyte-85/moviebox-api.git
 cd moviebox-api
-
-# Run Termux installer
 chmod +x install-termux.sh
 ./install-termux.sh
-
-# Reload shell
-source ~/.bashrc
-
-# Run
-moviebox-interactive
 ```
 
-**Quick Install (One-liner):**
+Run:
+
 ```bash
-pkg install git -y && git clone https://github.com/orionbyte-85/moviebox-api.git && cd moviebox-api && chmod +x install-termux.sh && ./install-termux.sh
+moviebox interactive-tui
 ```
 
----
+## 2) What installers configure
 
-## 🚀 Quick Start
+All installers:
 
-After installation on any platform:
+- Create or reuse `.venv`
+- Upgrade `pip`
+- Install editable package with CLI extras (`-e ".[cli]"`)
+- Verify `moviebox` entrypoint in `.venv`
 
-### Interactive Menu
+Shell integration (automatic by default):
+
+- `install.sh`: bash/zsh auto-venv + completion
+- `install-termux.sh`: bash auto-venv + completion
+- `install.ps1`: PowerShell profile auto-venv + completion
+- `install.bat`: no shell profile changes (use PowerShell installer for that)
+
+To skip shell integration:
+
+Linux/macOS/Termux:
+
 ```bash
-moviebox interactive
+MOVIEBOX_SKIP_SHELL_SETUP=1 ./install.sh
 ```
 
-### Direct Downloads
-```bash
-# Download movie
-moviebox download-movie "Avatar"
+PowerShell:
 
-# Download TV series
-moviebox download-series "Game of Thrones" -s 1 -e 1
-
-# Stream with MPV
-moviebox download-movie "Avatar" --stream-via mpv
+```powershell
+$env:MOVIEBOX_SKIP_SHELL_SETUP='1'; .\install.ps1
 ```
 
----
-
-## 🎬 New Features in Your Fork
-
-- ✅ **Streamlined TV Series UX** - Direct to episodes!
-- ✅ **Animation Search** - Dedicated search tab
-- ✅ **Smart Pagination** - Total counts & page estimates
-- ✅ **10+ Languages** - Subtitle support
-- ✅ **Quality Selection** - BEST/1080P/720P/480P
-- ✅ **Mirror Servers** - 7 server options
-
----
-
-## 🛠️ Manual Installation (Advanced)
-
-If installers don't work, manual install:
-
-### All Platforms
+## 3) Manual install (all platforms)
 
 ```bash
-# Clone
-git clone https://github.com/YOUR_USERNAME/moviebox-api.git
+git clone https://github.com/orionbyte-85/moviebox-api.git
 cd moviebox-api
-
-# Create virtual environment
 python -m venv .venv
-
-# Activate
-# Linux/Mac:
-source .venv/bin/activate
-# Windows CMD:
-.venv\Scripts\activate.bat
-# Windows PowerShell:
-.\.venv\Scripts\Activate.ps1
-
-# Install
-pip install -e ".[cli]"
-
-# Run
-moviebox interactive
 ```
 
----
+Activate:
 
-## 🎯 Platform-Specific Tips
+Linux/macOS/Termux:
 
-### Linux
-- Install MPV: `sudo apt install mpv` (Ubuntu/Debian)
-- Install VLC: `sudo apt install vlc`
-
-### macOS
-- Install via Homebrew: `brew install mpv vlc`
-
-### Windows
-- Download MPV: https://mpv.io/installation/
-- Download VLC: https://www.videolan.org/
-
-### Termux/Android
-- Use F-Droid version (better than Play Store)
-- Install MPV: `pkg install mpv`
-- Termux shortcuts:
-  - Volume Down + Q = Exit
-  - Volume Down + C = Ctrl+C
-
----
-
-## ❓ Troubleshooting
-
-### "Python not found"
-Install Python 3.9+ from python.org
-
-### "Permission denied" (Linux/Mac)
 ```bash
-chmod +x install.sh
+source .venv/bin/activate
 ```
 
-### "Cannot load script" (Windows PowerShell)
+Windows CMD:
+
+```cmd
+.venv\Scripts\activate.bat
+```
+
+PowerShell:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+Install:
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install -e ".[cli]"
+```
+
+## 4) Autocompletion setup (manual)
+
+### Bash
+
+```bash
+echo 'eval "$(_MOVIEBOX_COMPLETE=bash_source moviebox)"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+### Zsh
+
+```zsh
+echo 'eval "$(_MOVIEBOX_COMPLETE=zsh_source moviebox)"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+### Fish
+
+```fish
+mkdir -p ~/.config/fish/completions
+_MOVIEBOX_COMPLETE=fish_source moviebox > ~/.config/fish/completions/moviebox.fish
+```
+
+### PowerShell
+
+```powershell
+if (-not (Test-Path $PROFILE)) {
+  New-Item -Type File -Path $PROFILE -Force | Out-Null
+}
+Add-Content $PROFILE @'
+if (Get-Command moviebox -ErrorAction SilentlyContinue) {
+  (& { $env:_MOVIEBOX_COMPLETE = "powershell_source"; moviebox }) | Out-String | Invoke-Expression
+  Remove-Item Env:_MOVIEBOX_COMPLETE -ErrorAction SilentlyContinue
+}
+'@
+```
+
+## 5) Auto-activate `.venv` on entering repo (manual)
+
+The installers can do this automatically. If you skipped that step, add one of the snippets below.
+
+### Bash
+
+Add to `~/.bashrc` (replace path):
+
+```bash
+export MOVIEBOX_PROJECT_ROOT="/absolute/path/to/moviebox-api"
+_moviebox_repo_auto_venv() {
+  local root="${MOVIEBOX_PROJECT_ROOT:-}"
+  if [[ "$PWD" == "$root" || "$PWD" == "$root/"* ]]; then
+    if [ -z "${VIRTUAL_ENV:-}" ] && [ -f "$root/.venv/bin/activate" ]; then
+      . "$root/.venv/bin/activate"
+      export MOVIEBOX_AUTO_VENV_ACTIVE=1
+    fi
+  else
+    if [ "${MOVIEBOX_AUTO_VENV_ACTIVE:-0}" = "1" ] && [ -n "${VIRTUAL_ENV:-}" ]; then
+      deactivate >/dev/null 2>&1 || true
+      unset MOVIEBOX_AUTO_VENV_ACTIVE
+    fi
+  fi
+}
+case ";${PROMPT_COMMAND:-};" in
+  *";_moviebox_repo_auto_venv;"*) ;;
+  *) PROMPT_COMMAND="_moviebox_repo_auto_venv;${PROMPT_COMMAND:-}" ;;
+esac
+```
+
+### Zsh
+
+Add to `~/.zshrc` (replace path):
+
+```zsh
+export MOVIEBOX_PROJECT_ROOT="/absolute/path/to/moviebox-api"
+_moviebox_repo_auto_venv() {
+  local root="${MOVIEBOX_PROJECT_ROOT:-}"
+  if [[ "$PWD" == "$root" || "$PWD" == "$root/"* ]]; then
+    if [[ -z "${VIRTUAL_ENV:-}" && -f "$root/.venv/bin/activate" ]]; then
+      source "$root/.venv/bin/activate"
+      export MOVIEBOX_AUTO_VENV_ACTIVE=1
+    fi
+  else
+    if [[ "${MOVIEBOX_AUTO_VENV_ACTIVE:-0}" == "1" && -n "${VIRTUAL_ENV:-}" ]]; then
+      deactivate
+      unset MOVIEBOX_AUTO_VENV_ACTIVE
+    fi
+  fi
+}
+autoload -Uz add-zsh-hook
+add-zsh-hook precmd _moviebox_repo_auto_venv
+```
+
+### PowerShell
+
+`install.ps1` writes this automatically to your profile. Re-run it if needed.
+
+## 6) Troubleshooting
+
+### Python not found
+
+Install Python 3.10+ and ensure it is in `PATH`.
+
+### PowerShell execution policy blocks script
+
+Run in PowerShell:
+
 ```powershell
 Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
 ```
 
-### Termux: "Package not found"
+### Termux package issues
+
 ```bash
-pkg update
-pkg upgrade
+pkg update -y
+pkg upgrade -y
 ```
 
-### Dependencies fail
+### Stream playback issues
+
+- Install `mpv` or `vlc`.
+- On Termux, chooser mode relies on installed Android media apps.
+
+### Subtitle API key setup
+
 ```bash
-# Try upgrading pip first
-pip install --upgrade pip
-
-# Then retry installation
-pip install -e ".[cli]"
+moviebox secret-set MOVIEBOX_SUBDL_API_KEY
+moviebox secret-set MOVIEBOX_SUBSOURCE_API_KEY
+moviebox secret-status
 ```
-
----
-
-## 📚 More Help
-
-- Issues: https://github.com/orionbyte-85/moviebox-api/issues
-- Original Repo: https://github.com/Simatwa/moviebox-api
-- Documentation: See README.md
-
----
-
-**Happy Watching! 🎬🍿**

@@ -2,6 +2,8 @@
 Provide ways to interact with Moviebox using `httpx`
 """
 
+import asyncio
+
 import httpx
 from httpx import Response
 from httpx._config import DEFAULT_TIMEOUT_CONFIG
@@ -119,10 +121,18 @@ class Session:
         """
         await self.ensure_cookies_are_assigned()
 
-        response = await self._client.get(url, params=params, **kwargs)
-        response.raise_for_status()
+        retry_attempts = int(kwargs.pop("retry_attempts", 3))
+        for attempt in range(1, retry_attempts + 1):
+            try:
+                response = await self._client.get(url, params=params, **kwargs)
+                response.raise_for_status()
+                return self._validate_response(response)
+            except (httpx.TimeoutException, httpx.NetworkError):
+                if attempt >= retry_attempts:
+                    raise
+                await asyncio.sleep(0.4 * attempt)
 
-        return self._validate_response(response)
+        raise RuntimeError("Failed to fetch resource with cookies after retries.")
 
     async def get_with_cookies_from_api(self, *args, **kwargs) -> dict:
         """Makes a http get request with server-assigned cookies from previous requests
@@ -181,16 +191,24 @@ class Session:
         Returns:
             MovieboxAppInfo: Details about latest moviebox app
         """
-        response = await self._client.get(url=self._moviebox_app_info_url)
-        response.raise_for_status()
+        retry_attempts = 3
+        for attempt in range(1, retry_attempts + 1):
+            try:
+                response = await self._client.get(url=self._moviebox_app_info_url)
+                response.raise_for_status()
 
-        moviebox_app_info = process_api_response(response.json())
+                moviebox_app_info = process_api_response(response.json())
 
-        if isinstance(moviebox_app_info, list):
-            moviebox_app_info = moviebox_app_info[0]
+                if isinstance(moviebox_app_info, list):
+                    moviebox_app_info = moviebox_app_info[0]
 
-        self.moviebox_app_info = MovieboxAppInfo(**moviebox_app_info)
+                self.moviebox_app_info = MovieboxAppInfo(**moviebox_app_info)
+                return self.moviebox_app_info
+            except (httpx.TimeoutException, httpx.NetworkError):
+                if attempt >= retry_attempts:
+                    raise
+                await asyncio.sleep(0.4 * attempt)
 
-        return self.moviebox_app_info
+        raise RuntimeError("Failed to fetch moviebox app info after retries.")
 
     update_session_cookies = _fetch_app_info

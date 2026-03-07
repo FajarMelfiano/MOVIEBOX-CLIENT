@@ -5,6 +5,12 @@ allowing Stremio to discover and stream movies/series from MovieBox.
 """
 
 from moviebox_api.stremio.manifest import MANIFEST
-from moviebox_api.stremio.server import run_server
+
+
+def run_server(*args, **kwargs):
+    from moviebox_api.stremio.server import run_server as _run_server
+
+    return _run_server(*args, **kwargs)
+
 
 __all__ = ["MANIFEST", "run_server"]

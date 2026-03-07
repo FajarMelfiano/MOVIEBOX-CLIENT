@@ -4,7 +4,10 @@ Generate models from httpx request responses.
 Also provides object mapping support to specific extracted item details
 """
 
+import re
 import typing as t
+
+import httpx
 
 from moviebox_api._bases import (
     BaseContentProviderAndHelper,
@@ -586,7 +589,13 @@ class BaseItemDetails(BaseContentProviderAndHelper):
     - Page content is fetched only once throughout the life of the instance
     """
 
-    def __init__(self, page_url: str, session: Session):
+    def __init__(
+        self,
+        page_url: str,
+        session: Session,
+        *,
+        subject_type: SubjectType | None = None,
+    ):
         """Constructor for `BaseItemPageDetails`
 
         Args:
@@ -596,8 +605,39 @@ class BaseItemDetails(BaseContentProviderAndHelper):
         assert_instance(session, Session, "session")
         self._url = validate_item_page_url(page_url)
         self._session = session
+        self._subject_type = subject_type
         self.__html_content: str | None = None
         """Cached page contents"""
+
+    def _extract_fallback_query(self) -> str:
+        """Infer a search query from the detail page slug."""
+
+        path = self._url.split("?", maxsplit=1)[0].strip("/")
+        slug = path.rsplit("/", maxsplit=1)[-1]
+        if not slug:
+            return ""
+
+        # Most detail slugs end with a short opaque token, for example
+        # `merlin-sMxCiIO6fZ9` or `avatar-indonesian-ujQYMQmUgp4`.
+        slug = re.sub(r"-[A-Za-z0-9]{6,}$", "", slug)
+        return slug.replace("-", " ").strip()
+
+    async def _resolve_fallback_url(self) -> str | None:
+        """Resolve an alternative detail URL when legacy URLs stop working."""
+
+        query = self._extract_fallback_query()
+        if not query:
+            return None
+
+        try:
+            subject_type = self._subject_type or SubjectType.ALL
+            search = Search(self._session, query=query, subject_type=subject_type)
+            results = await search.get_content_model()
+            if not results.items:
+                return None
+            return validate_item_page_url(results.first_item.page_url)
+        except Exception:
+            return None
 
     async def get_html_content(self) -> str:
         """The specific page contents
@@ -609,9 +649,16 @@ class BaseItemDetails(BaseContentProviderAndHelper):
             # Not a good approach for async but it will save alot of seconds & bandwidth
             return self.__html_content
 
-        resp = await self._session.get_with_cookies(
-            get_absolute_url(self._url),
-        )
+        try:
+            resp = await self._session.get_with_cookies(get_absolute_url(self._url))
+        except httpx.HTTPStatusError:
+            fallback_url = await self._resolve_fallback_url()
+            if fallback_url is None or fallback_url == self._url:
+                raise
+
+            self._url = fallback_url
+            resp = await self._session.get_with_cookies(get_absolute_url(self._url))
+
         self.__html_content = resp.text
         return self.__html_content
 
@@ -704,7 +751,7 @@ class MovieDetails(BaseItemDetails):
         else:
             page_url = url_or_item
 
-        super().__init__(page_url=page_url, session=session)
+        super().__init__(page_url=page_url, session=session, subject_type=SubjectType.MOVIES)
 
 
 class TVSeriesDetails(BaseItemDetails):
@@ -731,4 +778,4 @@ class TVSeriesDetails(BaseItemDetails):
         else:
             page_url = url_or_item
 
-        super().__init__(page_url=page_url, session=session)
+        super().__init__(page_url=page_url, session=session, subject_type=SubjectType.TV_SERIES)

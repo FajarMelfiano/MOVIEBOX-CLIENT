@@ -2,24 +2,18 @@
 
 Handles stream, catalog, and subtitle requests by bridging
 Stremio's IMDB-based system to moviebox-api's title-based search.
-All streams and subtitles are served through the local proxy for
-maximum compatibility (CDN requires auth headers).
+Moviebox streams and subtitles are served through the local proxy
+for compatibility with CDN auth headers. Other providers are
+returned as direct URLs.
 """
 
 import logging
-from difflib import SequenceMatcher
+import os
 
 from moviebox_api.constants import SubjectType
 from moviebox_api.core import Search, Trending
-from moviebox_api.download import (
-    DownloadableMovieFilesDetail,
-    DownloadableTVSeriesFilesDetail,
-)
-from moviebox_api.models import (
-    DownloadableFilesMetadata,
-    SearchResultsItem,
-    SearchResultsModel,
-)
+from moviebox_api.models import SearchResultsItem, SearchResultsModel
+from moviebox_api.providers import get_provider
 from moviebox_api.requests import Session
 from moviebox_api.stremio.imdb import CinemetaInfo, parse_video_id, resolve_imdb
 
@@ -29,12 +23,14 @@ logger = logging.getLogger(__name__)
 def _proxy_media_url(cdn_url: str) -> str:
     """Convert a CDN URL to a proxied URL through our addon server."""
     from moviebox_api.stremio.server import encode_url, get_server_base_url
+
     return f"{get_server_base_url()}/proxy/media/{encode_url(cdn_url)}"
 
 
 def _proxy_subtitle_url(cdn_url: str) -> str:
     """Convert a subtitle CDN URL to a proxied URL through our addon server."""
     from moviebox_api.stremio.server import encode_url, get_server_base_url
+
     return f"{get_server_base_url()}/proxy/subtitle/{encode_url(cdn_url)}"
 
 
@@ -49,87 +45,24 @@ def _format_size(size_bytes: int) -> str:
     return f"{size_bytes} B"
 
 
-def _title_similarity(a: str, b: str) -> float:
-    """Calculate similarity between two titles (0.0 to 1.0)."""
-    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+def _format_provider_subtitles(subtitles: list, *, proxy: bool, provider_name: str) -> list[dict]:
+    mapped = []
+    seen_urls = set()
 
+    for index, subtitle in enumerate(subtitles):
+        if subtitle.url in seen_urls:
+            continue
+        seen_urls.add(subtitle.url)
 
-async def _search_moviebox(
-    session: Session,
-    title: str,
-    subject_type: SubjectType,
-    year: int = 0,
-) -> SearchResultsItem | None:
-    """Search moviebox for a title and return the best matching item.
-    
-    Uses title similarity matching to avoid false positives (e.g. searching 'Iron Lung' 
-    but getting 'Avatar' due to year match).
-    """
-    try:
-        search = Search(session, title, subject_type)
-        results: SearchResultsModel = await search.get_content_model()
+        mapped.append(
+            {
+                "id": f"{provider_name}-{subtitle.language}-{index}",
+                "url": _proxy_subtitle_url(subtitle.url) if proxy else subtitle.url,
+                "lang": subtitle.language,
+            }
+        )
 
-        if not results.items:
-            logger.warning(f"No moviebox results for '{title}'")
-            return None
-
-        # Sort all results by title similarity to the requested title
-        scored_items = []
-        for item in results.items:
-            # Clean title for comparison (remove year if present in title string)
-            score = _title_similarity(title, item.title)
-            scored_items.append((score, item))
-        
-        # Sort by score descending
-        scored_items.sort(key=lambda x: x[0], reverse=True)
-        
-        # Log top 3 matches for debugging
-        top_matches = [f"{item.title} ({score:.2f})" for score, item in scored_items[:3]]
-        logger.info(f"Top matches for '{title}': {', '.join(top_matches)}")
-
-        best_item = None
-        best_score = 0.0
-
-        # Strategy 1: Find high similarity + correct year
-        if year > 0:
-            for score, item in scored_items:
-                # Accept year match only if title is reasonably similar (> 0.6)
-                if item.releaseDate.year == year and score > 0.6:
-                    logger.info(f"Year-matched & verified: {item.title} ({item.releaseDate.year}) score={score:.2f}")
-                    return item
-        
-        # Strategy 2: Fallback to highest similarity score
-        # But ensure it's actually similar (> 0.6)
-        first_score, first_item = scored_items[0]
-        if first_score > 0.6:
-            logger.info(f"Best title match: {first_item.title} ({first_item.releaseDate.year}) score={first_score:.2f}")
-            return first_item
-            
-        logger.warning(f"No good match found for '{title}'. Best was '{first_item.title}' with score {first_score:.2f}")
-        return None
-
-    except Exception as e:
-        logger.error(f"Moviebox search failed for '{title}': {e}")
-        return None
-
-
-async def _get_downloadable_metadata(
-    session: Session,
-    item: SearchResultsItem,
-    season: int,
-    episode: int,
-) -> DownloadableFilesMetadata | None:
-    """Fetch downloadable file metadata."""
-    try:
-        if season == 0 and episode == 0:
-            detail = DownloadableMovieFilesDetail(session, item)
-            return await detail.get_content_model()
-        else:
-            detail = DownloadableTVSeriesFilesDetail(session, item)
-            return await detail.get_content_model(season, episode)
-    except Exception as e:
-        logger.error(f"Failed to get metadata: {e}")
-        return None
+    return mapped
 
 
 async def handle_stream(content_type: str, video_id: str) -> dict:
@@ -145,55 +78,68 @@ async def handle_stream(content_type: str, video_id: str) -> dict:
         logger.warning(f"Could not resolve IMDB {imdb_id}")
         return {"streams": []}
 
-    subject_type = (
-        SubjectType.TV_SERIES if content_type == "series" else SubjectType.MOVIES
-    )
+    subject_type = SubjectType.TV_SERIES if content_type == "series" else SubjectType.MOVIES
 
-    session = Session()
-    item = await _search_moviebox(session, info.title, subject_type, info.year)
-    if not item:
+    provider_name = os.getenv("MOVIEBOX_PROVIDER", "moviebox")
+
+    try:
+        provider = get_provider(provider_name)
+    except Exception as exc:
+        logger.error(f"Invalid provider '{provider_name}': {exc}")
         return {"streams": []}
 
-    metadata = await _get_downloadable_metadata(session, item, season, episode)
-    if not metadata or not metadata.downloads:
-        logger.warning(f"No downloadable files for {info.title}")
+    try:
+        item = await provider.search_best_match(info.title, subject_type, year=info.year)
+        if not item:
+            logger.warning(f"No {provider.name} results for '{info.title}'")
+            return {"streams": []}
+
+        target_season = season if content_type == "series" else 0
+        target_episode = episode if content_type == "series" else 0
+        resolved_streams = await provider.resolve_streams(
+            item,
+            season=target_season,
+            episode=target_episode,
+        )
+    except Exception as exc:
+        logger.error(f"Provider stream resolution failed ({provider.name}): {exc}")
         return {"streams": []}
 
-    # Build proxied subtitle list
-    proxy_subtitles = []
-    if metadata.captions:
-        proxy_subtitles = [
-            {
-                "id": f"moviebox-{caption.lan}",
-                "url": _proxy_subtitle_url(str(caption.url)),
-                "lang": caption.lan,
-            }
-            for caption in metadata.captions
-        ]
+    if not resolved_streams:
+        logger.warning(f"No streams resolved by provider '{provider.name}' for {info.title}")
+        return {"streams": []}
 
-    # Build streams — proxied URLs, sorted highest resolution first
+    should_proxy = provider.name == "moviebox"
+
     streams = []
-    for media_file in sorted(metadata.downloads, key=lambda f: f.resolution, reverse=True):
-        resolution = f"{media_file.resolution}P"
-        size_str = _format_size(media_file.size)
+    for stream in resolved_streams:
+        quality = stream.quality or "AUTO"
+
+        description = quality
+        if stream.size:
+            description = f"{quality} • {_format_size(stream.size)}"
 
         stream_obj = {
-            "name": f"MovieBox {resolution}",
-            "description": f"{resolution} • {size_str}",
-            "url": _proxy_media_url(str(media_file.url)),
+            "name": f"{provider.name.title()} {quality}",
+            "description": description,
+            "url": _proxy_media_url(stream.url) if should_proxy else stream.url,
             "behaviorHints": {
-                "bingeGroup": f"moviebox-{media_file.resolution}",
+                "bingeGroup": f"{provider.name}-{quality.lower()}",
             },
         }
 
-        if proxy_subtitles:
-            stream_obj["subtitles"] = proxy_subtitles
+        subtitles = _format_provider_subtitles(
+            stream.subtitles,
+            proxy=should_proxy,
+            provider_name=provider.name,
+        )
+        if subtitles:
+            stream_obj["subtitles"] = subtitles
 
         streams.append(stream_obj)
 
     logger.info(
-        f"Returning {len(streams)} streams for {info.title}"
-        f"{f' S{season}E{episode}' if season > 0 else ''}"
+        f"Returning {len(streams)} streams for {info.title}{f' S{season}E{episode}' if season > 0 else ''}"
     )
     return {"streams": streams}
 
@@ -206,30 +152,45 @@ async def handle_subtitles(content_type: str, video_id: str) -> dict:
     if not info:
         return {"subtitles": []}
 
-    subject_type = (
-        SubjectType.TV_SERIES if content_type == "series" else SubjectType.MOVIES
+    subject_type = SubjectType.TV_SERIES if content_type == "series" else SubjectType.MOVIES
+
+    provider_name = os.getenv("MOVIEBOX_PROVIDER", "moviebox")
+
+    try:
+        provider = get_provider(provider_name)
+    except Exception as exc:
+        logger.error(f"Invalid provider '{provider_name}': {exc}")
+        return {"subtitles": []}
+
+    try:
+        item = await provider.search_best_match(info.title, subject_type, year=info.year)
+        if not item:
+            return {"subtitles": []}
+
+        target_season = season if content_type == "series" else 0
+        target_episode = episode if content_type == "series" else 0
+
+        subtitles = await provider.resolve_subtitles(item, season=target_season, episode=target_episode)
+
+        if not subtitles:
+            streams = await provider.resolve_streams(item, season=target_season, episode=target_episode)
+            for stream in streams:
+                subtitles.extend(stream.subtitles)
+    except Exception as exc:
+        logger.error(f"Provider subtitles resolution failed ({provider.name}): {exc}")
+        return {"subtitles": []}
+
+    if not subtitles:
+        return {"subtitles": []}
+
+    mapped_subtitles = _format_provider_subtitles(
+        subtitles,
+        proxy=provider.name == "moviebox",
+        provider_name=provider.name,
     )
 
-    session = Session()
-    item = await _search_moviebox(session, info.title, subject_type, info.year)
-    if not item:
-        return {"subtitles": []}
-
-    metadata = await _get_downloadable_metadata(session, item, season, episode)
-    if not metadata or not metadata.captions:
-        return {"subtitles": []}
-
-    subtitles = [
-        {
-            "id": f"moviebox-{caption.lan}-{caption.id}",
-            "url": _proxy_subtitle_url(str(caption.url)),
-            "lang": caption.lan,
-        }
-        for caption in metadata.captions
-    ]
-
-    logger.info(f"Returning {len(subtitles)} subtitles for {info.title}")
-    return {"subtitles": subtitles}
+    logger.info(f"Returning {len(mapped_subtitles)} subtitles for {info.title}")
+    return {"subtitles": mapped_subtitles}
 
 
 async def handle_catalog(
@@ -244,11 +205,7 @@ async def handle_catalog(
     try:
         if "search" in (catalog_id or "") and extra_args and extra_args.get("search"):
             query = extra_args["search"]
-            subject_type = (
-                SubjectType.TV_SERIES
-                if content_type == "series"
-                else SubjectType.MOVIES
-            )
+            subject_type = SubjectType.TV_SERIES if content_type == "series" else SubjectType.MOVIES
             search = Search(session, query, subject_type)
             results = await search.get_content_model()
 
@@ -258,11 +215,7 @@ async def handle_catalog(
                     metas.append(meta)
 
         elif "trending" in (catalog_id or ""):
-            subject_type = (
-                SubjectType.TV_SERIES
-                if content_type == "series"
-                else SubjectType.MOVIES
-            )
+            subject_type = SubjectType.TV_SERIES if content_type == "series" else SubjectType.MOVIES
             trending = Trending(session, subject_type)
             results = await trending.get_content_model()
 

@@ -1,5 +1,7 @@
 """Contains non-essential cli-commands"""
 
+import re
+
 import click
 import rich
 from rich.table import Table
@@ -14,6 +16,43 @@ from moviebox_api.core import Homepage, MovieDetails, PopularSearch, TVSeriesDet
 from moviebox_api.extractor import JsonDetailsExtractor
 from moviebox_api.helpers import get_event_loop
 from moviebox_api.requests import Session
+
+
+def _normalise_title_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+def _resolve_title_filter(title: str, available_titles: list[str]) -> str | None:
+    if title in available_titles:
+        return title
+
+    target_key = _normalise_title_key(title)
+    if not target_key:
+        return None
+
+    for candidate in available_titles:
+        if _normalise_title_key(candidate) == target_key:
+            return candidate
+
+    for candidate in available_titles:
+        if target_key in _normalise_title_key(candidate):
+            return candidate
+
+    tokens = re.findall(r"[a-z0-9]+", title.lower())
+    tokens = [token for token in tokens if token not in {"the", "now", "new", "and", "of"}]
+    if tokens:
+        scored: list[tuple[int, str]] = []
+        for candidate in available_titles:
+            candidate_key = _normalise_title_key(candidate)
+            score = sum(1 for token in tokens if token in candidate_key)
+            if score:
+                scored.append((score, candidate))
+
+        if scored:
+            scored.sort(key=lambda entry: entry[0], reverse=True)
+            return scored[0][1]
+
+    return None
 
 
 @click.command(context_settings=command_context_settings)
@@ -134,11 +173,12 @@ def homepage_content_command(json: bool, title: str, banner: bool, **start_kwarg
                 processed_items[key] = item_values
 
             if title is not None:
-                assert title in processed_items.keys(), (
+                resolved_title = _resolve_title_filter(title, list(processed_items.keys()))
+                assert resolved_title is not None, (
                     f"Title filter '{title}' is not one of {list(processed_items.keys())}"
                 )
 
-                rich.print_json(data={title: processed_items.get(title)}, indent=4)
+                rich.print_json(data={resolved_title: processed_items.get(resolved_title)}, indent=4)
             else:
                 rich.print_json(data=processed_items, indent=4)
     else:
@@ -165,9 +205,11 @@ def homepage_content_command(json: bool, title: str, banner: bool, **start_kwarg
 
         else:
             if title is not None:
-                target_title = items.get(title)
-                assert target_title is not None, f"Title filter '{title}' is not one of {list(items.keys())}"
-                items = {title: target_title}
+                resolved_title = _resolve_title_filter(title, list(items.keys()))
+                assert resolved_title is not None, (
+                    f"Title filter '{title}' is not one of {list(items.keys())}"
+                )
+                items = {resolved_title: items.get(resolved_title)}
 
             for key in items.keys():
                 target_item = items[key]

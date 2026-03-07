@@ -16,33 +16,39 @@ from moviebox_api.models import (
 class MetadataModel(BaseModel):
     """`.resData.metadata`"""
 
-    description: str
-    image: HttpUrl
-    keyWords: list[str]
-    referer: HttpUrl
-    title: str
-    url: HttpUrl
+    description: str = ""
+    image: HttpUrl | str | None = None
+    keyWords: list[str] = Field(default_factory=list)
+    referer: HttpUrl | str | None = None
+    title: str = ""
+    url: HttpUrl | str | None = None
 
     @field_validator("keyWords", mode="before")
-    def validate_genre(value: str) -> list[str]:
+    def validate_genre(value: t.Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(item) for item in value if str(item).strip()]
+        if isinstance(value, str):
+            return [part.strip() for part in value.split(",") if part.strip()]
         return value.split(",")
 
     @field_validator("url", mode="before")
-    def validate_url(value: str) -> str:
+    def validate_url(value: t.Any) -> t.Any:
         return get_absolute_url(value) if bool(value) else value
 
 
 class PubParamModel(BaseModel):
     """`.resData.pubParam`"""
 
-    isNewUser: bool
-    lang: str
-    referer: HttpUrl
-    uid: str
-    url: HttpUrl
+    isNewUser: bool = False
+    lang: str = ""
+    referer: HttpUrl | str | None = None
+    uid: str = ""
+    url: HttpUrl | str | None = None
 
     @field_validator("url", mode="before")
-    def validate_url(value: str) -> str:
+    def validate_url(value: t.Any) -> t.Any:
         return get_absolute_url(value) if bool(value) else value
 
 
@@ -65,9 +71,9 @@ class SeasonsModel(BaseModel):
 class ResourceModel(BaseModel):
     """`.resData.resource`"""
 
-    seasons: list[SeasonsModel]
-    source: str
-    uploadBy: str
+    seasons: list[SeasonsModel] = Field(default_factory=list)
+    source: str = ""
+    uploadBy: str = ""
 
     @property
     def total_seasons(self) -> int:
@@ -240,7 +246,7 @@ class SubjectModel(ContentCategorySubjectsModel):
     """`.resData.subject`"""
 
     title: str
-    trailer: SubjectTrailerModel | None
+    trailer: SubjectTrailerModel | None = None
 
 
 class ResDataModel(BaseModel):
@@ -248,12 +254,12 @@ class ResDataModel(BaseModel):
 
     metadata: MetadataModel
     postList: PostListModel
-    pubParam: PubParamModel
-    referer: HttpUrl
+    pubParam: PubParamModel | None = None
+    referer: HttpUrl | str | None = None
     resource: ResourceModel
-    stars: list[StarsModel]
+    stars: list[StarsModel] = Field(default_factory=list)
     subject: SubjectModel
-    url: HttpUrl
+    url: HttpUrl | str | None = None
 
     @field_validator("url", mode="before")
     def validate_url(value: str) -> str:
@@ -263,14 +269,14 @@ class ResDataModel(BaseModel):
 class ItemJsonDetailsModel(BaseModel):
     """Whole extracted item details from json-formatted data"""
 
-    nuxt_i18n_meta: dict = Field(alias="nuxt-i18n-meta")
+    nuxt_i18n_meta: dict = Field(default_factory=dict, alias="nuxt-i18n-meta")
     resData: ResDataModel
-    utmSource: str
-    showNotFound: bool
+    utmSource: str = ""
+    showNotFound: bool = False
     # midForYou: list
-    midReviewsList: list[PostListItemModel]
-    pcShowSliderNav: bool
-    detailShowSliderNav: bool
-    QRCode: str
-    activeSidebar: str
-    playSourceTabType: int
+    midReviewsList: list[PostListItemModel] = Field(default_factory=list)
+    pcShowSliderNav: bool = False
+    detailShowSliderNav: bool = False
+    QRCode: str = ""
+    activeSidebar: str = ""
+    playSourceTabType: int = 0

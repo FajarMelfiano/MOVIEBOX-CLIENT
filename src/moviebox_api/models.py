@@ -246,6 +246,7 @@ class MediaFileMetadata(BaseFileMetadata):
     url: HttpUrl
     resolution: int
     size: int
+    audio: str | None = None
 
 
 class CaptionFileMetadata(BaseFileMetadata):

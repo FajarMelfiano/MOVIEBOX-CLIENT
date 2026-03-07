@@ -2,7 +2,6 @@
 This module contains base classes for the entire package
 """
 
-import asyncio
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -36,11 +35,15 @@ class ContentProviderHelper:
 
     def get_content_sync(self, *args, **kwargs) -> dict | list[dict]:
         """Get content `synchronously`"""
-        return asyncio.get_event_loop().run_until_complete(self.get_content(*args, **kwargs))
+        from moviebox_api.helpers import get_event_loop
+
+        return get_event_loop().run_until_complete(self.get_content(*args, **kwargs))
 
     def get_content_model_sync(self, *args, **kwargs) -> object | list[object]:
         """Get content model `synchronously`"""
-        return asyncio.get_event_loop().run_until_complete(self.get_content_model(*args, **kwargs))
+        from moviebox_api.helpers import get_event_loop
+
+        return get_event_loop().run_until_complete(self.get_content_model(*args, **kwargs))
 
 
 class BaseContentProviderAndHelper(BaseContentProvider, ContentProviderHelper):
@@ -61,7 +64,9 @@ class FileDownloaderHelper:
 
     def run_sync(self, *args, **kwargs) -> DownloadedFile | httpx.Response:
         """Sychronously performs the actual download"""
-        return asyncio.get_event_loop().run_until_complete(self.run(*args, **kwargs))
+        from moviebox_api.helpers import get_event_loop
+
+        return get_event_loop().run_until_complete(self.run(*args, **kwargs))
 
 
 class BaseFileDownloaderAndHelper(FileDownloaderHelper, BaseFileDownloader):

@@ -1,123 +1,173 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# Moviebox Enhanced - Termux/Android Installation Script
-# Enhanced TUI with streamlined UX and animation search
 
-set -e  # Exit on error
+set -euo pipefail
 
-# Colors
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-echo -e "${CYAN}"
-echo "╔══════════════════════════════════════════╗"
-echo "║                                          ║"
-echo "║  🎬 MOVIEBOX ENHANCED - TERMUX           ║"
-echo "║                                          ║"
-echo "╚══════════════════════════════════════════╝"
-echo -e "${NC}"
-echo ""
+step() {
+    printf "${BLUE}[step]${NC} %s\n" "$1"
+}
 
-echo -e "${YELLOW}📱 Termux/Android Installation${NC}"
-echo ""
+ok() {
+    printf "${GREEN}[ok]${NC} %s\n" "$1"
+}
 
-# Update packages
-echo -e "${BLUE}[1/6]${NC} Updating Termux packages..."
+warn() {
+    printf "${YELLOW}[warn]${NC} %s\n" "$1"
+}
+
+fail() {
+    printf "${RED}[error]${NC} %s\n" "$1"
+    exit 1
+}
+
+setup_shell_integration() {
+    if [ "${MOVIEBOX_SKIP_SHELL_SETUP:-0}" = "1" ]; then
+        warn "Skipping shell integration because MOVIEBOX_SKIP_SHELL_SETUP=1"
+        return
+    fi
+
+    local rc_file
+    local marker
+    rc_file="${HOME}/.bashrc"
+    marker="# >>> moviebox shell setup >>>"
+
+    if [ -f "$rc_file" ] && grep -qF "$marker" "$rc_file"; then
+        ok "Shell integration already exists in $rc_file"
+        return
+    fi
+
+    touch "$rc_file"
+
+    local escaped_root
+    escaped_root="${SCRIPT_DIR//\"/\\\"}"
+
+    cat >>"$rc_file" <<EOF
+
+# >>> moviebox shell setup >>>
+export MOVIEBOX_PROJECT_ROOT="$escaped_root"
+_moviebox_repo_auto_venv() {
+  local root="\${MOVIEBOX_PROJECT_ROOT:-}"
+  if [ -z "\$root" ]; then
+    return
+  fi
+  if [[ "\$PWD" == "\$root" || "\$PWD" == "\$root/"* ]]; then
+    if [ -z "\${VIRTUAL_ENV:-}" ] && [ -f "\$root/.venv/bin/activate" ]; then
+      . "\$root/.venv/bin/activate" >/dev/null 2>&1
+      export MOVIEBOX_AUTO_VENV_ACTIVE=1
+    fi
+  else
+    if [ "\${MOVIEBOX_AUTO_VENV_ACTIVE:-0}" = "1" ] && [ -n "\${VIRTUAL_ENV:-}" ]; then
+      deactivate >/dev/null 2>&1 || true
+      unset MOVIEBOX_AUTO_VENV_ACTIVE
+    fi
+  fi
+}
+case ";\${PROMPT_COMMAND:-};" in
+  *";_moviebox_repo_auto_venv;"*) ;;
+  *) PROMPT_COMMAND="_moviebox_repo_auto_venv;\${PROMPT_COMMAND:-}" ;;
+esac
+if [ -x "\${MOVIEBOX_PROJECT_ROOT}/.venv/bin/moviebox" ]; then
+  eval "\$(_MOVIEBOX_COMPLETE=bash_source "\${MOVIEBOX_PROJECT_ROOT}/.venv/bin/moviebox")"
+fi
+# <<< moviebox shell setup <<<
+EOF
+
+    ok "Added auto-venv and completion to $rc_file"
+}
+
+printf "${CYAN}Moviebox installer (Termux)${NC}\n\n"
+
+if ! command -v pkg >/dev/null 2>&1; then
+    fail "This script must run inside Termux"
+fi
+
+step "Updating Termux package index"
 pkg update -y
-echo -e "${GREEN}✓${NC} Packages updated"
-echo ""
+ok "Termux package index updated"
 
-# Install Python
-echo -e "${BLUE}[2/6]${NC} Installing Python..."
-if ! command -v python &> /dev/null; then
-    pkg install python -y
+step "Installing required system packages"
+pkg install -y python git
+ok "System packages installed"
+
+step "Checking Python version"
+PYTHON_BIN="python"
+if ! "$PYTHON_BIN" - <<'PY'
+import sys
+if sys.version_info[:2] < (3, 10):
+    raise SystemExit(1)
+PY
+then
+    fail "Python 3.10+ is required"
 fi
-PYTHON_VERSION=$(python --version | cut -d' ' -f2)
-echo -e "${GREEN}✓${NC} Python $PYTHON_VERSION installed"
-echo ""
+ok "Using $($PYTHON_BIN --version 2>&1)"
 
-# Install build dependencies
-echo -e "${BLUE}[3/6]${NC} Installing build dependencies..."
-pkg install build-essential libffi openssl -y
-echo -e "${GREEN}✓${NC} Dependencies installed"
-echo ""
-
-# Install pip packages
-echo -e "${BLUE}[4/6]${NC} Installing Python packages..."
-# pip install --upgrade pip --quiet
-
-# Termux requires special installation (no deps first)
-echo "Installing moviebox-api (this may take a few minutes)..."
-pip install --no-deps .
-pip install 'pydantic==2.9.2'
-pip install rich click bs4 httpx throttlebuster
-echo -e "${GREEN}✓${NC} Packages installed"
-echo ""
-
-# Install optional dependencies
-echo -e "${BLUE}[5/6]${NC} Installing optional packages..."
-echo "Installing CLI dependencies..."
-pip install rich-click --quiet 2>/dev/null || echo "Some optional packages skipped"
-echo -e "${GREEN}✓${NC} Optional packages installed"
-echo ""
-
-# Setup alias
-echo -e "${BLUE}[6/6]${NC} Setting up shortcuts..."
-if ! grep -q "alias moviebox=" ~/.bashrc; then
-    echo "" >> ~/.bashrc
-    echo "# Moviebox Enhanced aliases" >> ~/.bashrc
-    echo "alias moviebox='python -m moviebox_api'" >> ~/.bashrc
-    echo "alias moviebox-interactive='python -m moviebox_api interactive'" >> ~/.bashrc
+step "Creating virtual environment"
+if [ -d ".venv" ] && [ ! -x ".venv/bin/python" ] && [ ! -x ".venv/bin/python3" ]; then
+    warn "Detected broken .venv, recreating"
+    rm -rf .venv
 fi
-source ~/.bashrc
-echo -e "${GREEN}✓${NC} Shortcuts configured"
-echo ""
 
-# Check optional players
-echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${YELLOW}Optional: Media Players${NC}"
-echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo ""
-
-if command -v mpv &> /dev/null; then
-    echo -e "${GREEN}✓${NC} MPV player found"
+if [ -x ".venv/bin/python" ] || [ -x ".venv/bin/python3" ]; then
+    ok "Reusing existing .venv"
 else
-    echo -e "${YELLOW}⚠${NC} MPV not found - Install for streaming:"
-    echo "  ${CYAN}pkg install mpv${NC}"
+    "$PYTHON_BIN" -m venv .venv
+    ok "Created .venv"
 fi
 
-echo ""
-echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${GREEN}✅ Installation Complete!${NC}"
-echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo ""
-echo -e "${YELLOW}📝 Quick Start:${NC}"
-echo ""
-echo "  1. Reload shell (to activate aliases):"
-echo -e "     ${CYAN}source ~/.bashrc${NC}"
-echo ""
-echo "  2. Run interactive menu:"
-echo -e "     ${CYAN}moviebox-interactive${NC}"
-echo "     or"
-echo -e "     ${CYAN}python -m moviebox_api interactive${NC}"
-echo ""
-echo "  3. Download directly:"
-echo -e "     ${CYAN}moviebox download-movie \"Avatar\"${NC}"
-echo ""
-echo -e "${YELLOW}🎬 Features:${NC}"
-echo "  • Direct episode access for TV series"
-echo "  • Animation search tab"
-echo "  • Smart pagination"
-echo "  • 10+ subtitle languages"
-echo "  • Works great on Android!"
-echo ""
-echo -e "${YELLOW}💡 Termux Tips:${NC}"
-echo "  • Use volume down + q to exit programs"
-echo "  • Install MPV: ${CYAN}pkg install mpv${NC}"
-echo "  • For better experience: ${CYAN}pkg install termux-api${NC}"
-echo ""
-echo -e "${GREEN}Happy watching on Android! 📱🍿${NC}"
-echo ""
+if [ -x "${SCRIPT_DIR}/.venv/bin/python" ]; then
+    VENV_PYTHON="${SCRIPT_DIR}/.venv/bin/python"
+elif [ -x "${SCRIPT_DIR}/.venv/bin/python3" ]; then
+    VENV_PYTHON="${SCRIPT_DIR}/.venv/bin/python3"
+else
+    fail "Virtualenv creation failed: missing .venv/bin/python and .venv/bin/python3"
+fi
+
+MOVIEBOX_BIN="${SCRIPT_DIR}/.venv/bin/moviebox"
+
+step "Upgrading pip"
+if ! "$VENV_PYTHON" -m pip --version >/dev/null 2>&1; then
+    warn "pip not available in .venv, bootstrapping with ensurepip"
+    "$VENV_PYTHON" -m ensurepip --upgrade
+fi
+"$VENV_PYTHON" -m pip install --upgrade pip
+ok "pip upgraded"
+
+step "Installing moviebox with CLI extras"
+if "$VENV_PYTHON" -m pip install -e ".[cli]"; then
+    ok "moviebox installed"
+else
+    warn "Standard install failed, trying Termux compatibility fallback"
+    "$VENV_PYTHON" -m pip install --no-deps -e .
+    "$VENV_PYTHON" -m pip install \
+        "bs4>=0.0.2" \
+        "click>=8.2.1" \
+        "httpx>=0.28.1" \
+        "pydantic==2.9.2" \
+        "rich>=14.1.0" \
+        "textual>=0.66.0" \
+        "throttlebuster>=0.1.11"
+    ok "moviebox installed with fallback dependency set"
+fi
+
+step "Configuring shell integration"
+setup_shell_integration
+
+step "Verifying CLI entrypoint"
+"$MOVIEBOX_BIN" --help >/dev/null
+ok "moviebox CLI is ready"
+
+printf "\n${GREEN}Install complete.${NC}\n"
+printf '%b\n' "- Open a new terminal (or run ${CYAN}source ~/.bashrc${NC}) to enable auto-venv + completion."
+printf '%b\n' "- Run now: ${CYAN}moviebox interactive-tui${NC}"
+printf '%b\n' "- Termux playback defaults to Android chooser (${CYAN}termux-open-url${NC})."
+printf '%b\n' "- Optional player: ${CYAN}pkg install mpv${NC}"
+printf '%b\n' "- Disable shell setup on rerun with: ${CYAN}MOVIEBOX_SKIP_SHELL_SETUP=1 ./install-termux.sh${NC}"

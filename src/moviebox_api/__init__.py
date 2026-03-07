@@ -114,6 +114,7 @@ from moviebox_api.download import (  # noqa: E402
 )
 from moviebox_api.extras.auto import MovieAuto  # noqa: E402
 from moviebox_api.requests import Session  # noqa: E402
+from moviebox_api.source import SourceResolver  # noqa: E402
 
 __all__ = [
     "Search",
@@ -133,6 +134,7 @@ __all__ = [
     "DownloadableMovieFilesDetail",
     "DownloadableTVSeriesFilesDetail",
     "resolve_media_file_to_be_downloaded",
+    "SourceResolver",
     # Constants
     "DOWNLOAD_QUALITIES",
     "MIRROR_HOSTS",

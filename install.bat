@@ -1,118 +1,65 @@
 @echo off
-REM Moviebox Enhanced - Windows CMD Installation Script
-REM Enhanced TUI with streamlined UX and animation search
+setlocal
 
-echo.
-echo ╔══════════════════════════════════════════╗
-echo ║                                          ║
-echo ║  🎬 MOVIEBOX ENHANCED - INSTALLER        ║
-echo ║                                          ║
-echo ╚══════════════════════════════════════════╝
+set "SCRIPT_DIR=%~dp0"
+cd /d "%SCRIPT_DIR%"
+
+echo Moviebox installer (Windows CMD)
 echo.
 
-REM Check Python
-echo [1/6] Checking Python installation...
+echo [step] Checking Python
 python --version >nul 2>&1
-if %errorlevel% neq 0 (
-    echo ❌ Python not found!
-    echo.
-    echo Please install Python 3.9+ from:
-    echo   https://www.python.org/downloads/
-    echo.
-    echo Make sure to check 'Add Python to PATH' during installation!
-    pause
+if errorlevel 1 (
+    echo [error] Python 3.10+ is required. Install from https://www.python.org/downloads/
     exit /b 1
 )
-echo ✓ Python found
-echo.
 
-REM Check pip
-echo [2/6] Checking pip...
-python -m pip --version >nul 2>&1
-if %errorlevel% neq 0 (
-    echo ⚠ pip not found, installing...
-    python -m ensurepip --default-pip
-)
-echo ✓ pip available
-echo.
+for /f "tokens=2 delims= " %%v in ('python --version 2^>^&1') do set "PY_VERSION=%%v"
+echo [ok] Using Python %PY_VERSION%
 
-REM Create virtual environment
-echo [3/6] Setting up virtual environment...
-if exist .venv (
-    echo ⚠ .venv already exists, using existing environment
+echo [step] Creating virtual environment
+if exist ".venv\Scripts\python.exe" (
+    echo [ok] Reusing existing .venv
 ) else (
-    echo Creating new virtual environment...
     python -m venv .venv
-    echo ✓ Virtual environment created
+    if errorlevel 1 (
+        echo [error] Failed to create .venv
+        exit /b 1
+    )
+    echo [ok] Created .venv
 )
-echo.
 
-REM Activate virtual environment
-echo [4/6] Activating environment...
-call .venv\Scripts\activate.bat
-echo ✓ Environment activated
-echo.
+set "VENV_PY=.venv\Scripts\python.exe"
+set "MOVIEBOX_EXE=.venv\Scripts\moviebox.exe"
 
-REM Upgrade pip
-echo [5/6] Upgrading pip...
-python -m pip install --upgrade pip --quiet
-echo ✓ pip upgraded
-echo.
-
-REM Install package
-echo [6/6] Installing moviebox-api...
-echo This may take a minute...
-python -m pip install -e ".[cli]" --quiet
-if %errorlevel% neq 0 (
-    echo ❌ Installation failed!
-    pause
+echo [step] Upgrading pip
+"%VENV_PY%" -m pip install --upgrade pip
+if errorlevel 1 (
+    echo [error] Failed to upgrade pip
     exit /b 1
 )
-echo ✓ Installation complete!
-echo.
+echo [ok] pip upgraded
 
-REM Check optional dependencies
-echo ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-echo Optional: Media Players (for streaming)
-echo ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-echo.
-
-where mpv >nul 2>&1
-if %errorlevel% equ 0 (
-    echo ✓ MPV player found
-) else (
-    echo ⚠ MPV not found - Download for streaming:
-    echo   https://mpv.io/installation/
+echo [step] Installing moviebox with CLI extras
+"%VENV_PY%" -m pip install -e ".[cli]"
+if errorlevel 1 (
+    echo [error] Installation failed
+    exit /b 1
 )
+echo [ok] moviebox installed
 
-where vlc >nul 2>&1
-if %errorlevel% equ 0 (
-    echo ✓ VLC player found
+echo [step] Verifying CLI entrypoint
+"%MOVIEBOX_EXE%" --help >nul 2>&1
+if errorlevel 1 (
+    echo [error] moviebox executable check failed
+    exit /b 1
 )
+echo [ok] moviebox CLI is ready
 
 echo.
-echo ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-echo ✅ Installation Complete!
-echo ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-echo.
-echo 📝 Quick Start:
-echo.
-echo   1. Activate environment:
-echo      .venv\Scripts\activate.bat
-echo.
-echo   2. Run interactive menu:
-echo      moviebox interactive
-echo.
-echo   3. Or download directly:
-echo      moviebox download-movie "Avatar"
-echo.
-echo 🎬 Features:
-echo   • Direct episode access for TV series
-echo   • Animation search tab
-echo   • Smart pagination
-echo   • 10+ subtitle languages
-echo   • Quality selection (BEST/1080P/720P/480P)
-echo.
-echo Happy watching! 🍿
-echo.
-pause
+echo Install complete.
+echo - Run now: .venv\Scripts\activate.bat ^&^& moviebox interactive-tui
+echo - Legacy menu is still available: moviebox interactive
+echo - For auto-venv and completion setup on Windows, use install.ps1 in PowerShell.
+
+exit /b 0

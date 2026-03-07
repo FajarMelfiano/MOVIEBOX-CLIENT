@@ -6,13 +6,13 @@ across the package.
 import asyncio
 import re
 import typing as t
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 from moviebox_api import logger
 from moviebox_api.constants import HOST_URL, ITEM_DETAILS_PATH
 from moviebox_api.exceptions import UnsuccessfulResponseError
 
-FILE_EXT_PATTERN = re.compile(r".+\.(\w+)\?.+")
+FILE_EXT_PATTERN = re.compile(r".+\.([A-Za-z0-9]+)(?:\?.*)?$")
 
 ILLEGAL_CHARACTERS_PATTERN = re.compile(r"[^\w\-_\.\s()&|]")
 
@@ -96,8 +96,16 @@ def get_file_extension(url: str) -> str | None:
 
 def validate_item_page_url(url: str) -> str:
     """Checks whether specific item page url is valid"""
-    if VALID_ITEM_PAGE_URL_PATTERN.match(url):
-        return url
+    normalized_url = url.strip()
+    parsed = urlsplit(normalized_url)
+
+    if parsed.scheme and parsed.netloc:
+        normalized_url = parsed.path or "/"
+        if parsed.query:
+            normalized_url = f"{normalized_url}?{parsed.query}"
+
+    if VALID_ITEM_PAGE_URL_PATTERN.match(normalized_url):
+        return normalized_url
 
     raise ValueError(f"Invalid url for a specific item page - '{url}'")
 

@@ -23,7 +23,7 @@ classifiers = [
 dependencies = [
     "bs4>=0.0.2",
     "httpx>=0.28.1",
-    "pydantic>=2.11.7",
+    "pydantic>=2.12.5",
     "throttlebuster>=0.1.11",
 ]
 
@@ -41,7 +41,9 @@ documentation = "https://github.com/Simatwa/moviebox-api"
 [project.optional-dependencies]
 cli = [
     "click>=8.2.1",
+    "keyring>=25.6.0",
     "rich>=14.1.0",
+    "textual>=0.66.0",
     "readline>=6.2.4.2 ; sys_platform == 'win32'",
 ]
 stremio = [
