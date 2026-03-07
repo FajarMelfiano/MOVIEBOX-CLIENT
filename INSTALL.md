@@ -263,9 +263,9 @@ pkg upgrade -y
 - Set `MOVIEBOX_PLAYBACK_TARGET` to override startup default:
   - `auto` (recommended)
   - `android-mpv`
+  - `mpvex`
   - `mx`
   - `vlc`
-  - `chooser`
   - `mpv-cli` (terminal mpv)
 
 ### TV next episode behavior

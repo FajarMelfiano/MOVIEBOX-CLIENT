@@ -230,6 +230,6 @@ else
     printf '%b\n' "- Open a new terminal (or run ${CYAN}source ~/.bashrc${NC}) to enable auto-venv + completion."
 fi
 printf '%b\n' "- Run now: ${CYAN}moviebox interactive-tui${NC}"
-printf '%b\n' "- Termux playback defaults to MPV Android app (fallback chooser)."
+printf '%b\n' "- Termux playback uses explicit player selection (MPV/MPVEX/VLC/MX) in Run page."
 printf '%b\n' "- Optional player: ${CYAN}pkg install mpv${NC}"
 printf '%b\n' "- Disable shell setup on rerun with: ${CYAN}MOVIEBOX_SKIP_SHELL_SETUP=1 ./install-termux.sh${NC}"

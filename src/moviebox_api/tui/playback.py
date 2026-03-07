@@ -13,10 +13,10 @@ from urllib.parse import urlparse
 AUTO_TARGET = "auto"
 
 ANDROID_MPV_TARGET = "android_mpv"
+ANDROID_MPVEX_TARGET = "android_mpvex"
+ANDROID_VLC_TARGET = "android_vlc"
 ANDROID_MX_PRO_TARGET = "android_mx_pro"
 ANDROID_MX_FREE_TARGET = "android_mx_free"
-ANDROID_VLC_TARGET = "android_vlc"
-ANDROID_CHOOSER_TARGET = "android_chooser"
 
 CLI_MPV_TARGET = "mpv_cli"
 CLI_VLC_TARGET = "vlc_cli"
@@ -24,10 +24,34 @@ BROWSER_TARGET = "browser"
 
 _ANDROID_TARGET_IDS = {
     ANDROID_MPV_TARGET,
+    ANDROID_MPVEX_TARGET,
+    ANDROID_VLC_TARGET,
     ANDROID_MX_PRO_TARGET,
     ANDROID_MX_FREE_TARGET,
+}
+
+_ANDROID_TARGET_ORDER = [
+    ANDROID_MPV_TARGET,
+    ANDROID_MPVEX_TARGET,
     ANDROID_VLC_TARGET,
-    ANDROID_CHOOSER_TARGET,
+    ANDROID_MX_PRO_TARGET,
+    ANDROID_MX_FREE_TARGET,
+]
+
+_ANDROID_TARGET_LABELS = {
+    ANDROID_MPV_TARGET: "MPV Android",
+    ANDROID_MPVEX_TARGET: "MPVEX Android",
+    ANDROID_VLC_TARGET: "VLC Android",
+    ANDROID_MX_PRO_TARGET: "MX Player Pro",
+    ANDROID_MX_FREE_TARGET: "MX Player Free",
+}
+
+_ANDROID_TARGET_PACKAGES = {
+    ANDROID_MPV_TARGET: ["is.xyz.mpv"],
+    ANDROID_MPVEX_TARGET: ["app.marlboroadvance.mpvex"],
+    ANDROID_VLC_TARGET: ["org.videolan.vlc"],
+    ANDROID_MX_PRO_TARGET: ["com.mxtech.videoplayer.pro"],
+    ANDROID_MX_FREE_TARGET: ["com.mxtech.videoplayer.ad"],
 }
 
 
@@ -37,6 +61,7 @@ class PlaybackTarget:
     label: str
     kind: str
     package: str | None = None
+    detected: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,72 +123,48 @@ def _list_installed_android_packages() -> set[str]:
     return set()
 
 
+def _target_package_candidates(target_id: str) -> list[str]:
+    return _ANDROID_TARGET_PACKAGES.get(target_id, [])
+
+
+def _target_detected(target_id: str, packages: set[str]) -> bool:
+    if not packages:
+        return False
+    candidates = _target_package_candidates(target_id)
+    return any(candidate in packages for candidate in candidates)
+
+
 def list_playback_targets() -> list[PlaybackTarget]:
     """Return available playback targets in current environment."""
 
-    targets = [PlaybackTarget(id=AUTO_TARGET, label="Auto (Recommended)", kind="virtual")]
-
     if is_termux_environment():
-        packages = _list_installed_android_packages()
-        if "is.xyz.mpv" in packages:
-            targets.append(
-                PlaybackTarget(
-                    id=ANDROID_MPV_TARGET,
-                    label="MPV Android app",
-                    kind="android",
-                    package="is.xyz.mpv",
-                )
-            )
-        if "com.mxtech.videoplayer.pro" in packages:
-            targets.append(
-                PlaybackTarget(
-                    id=ANDROID_MX_PRO_TARGET,
-                    label="MX Player Pro",
-                    kind="android",
-                    package="com.mxtech.videoplayer.pro",
-                )
-            )
-        if "com.mxtech.videoplayer.ad" in packages:
-            targets.append(
-                PlaybackTarget(
-                    id=ANDROID_MX_FREE_TARGET,
-                    label="MX Player",
-                    kind="android",
-                    package="com.mxtech.videoplayer.ad",
-                )
-            )
-        if "org.videolan.vlc" in packages:
-            targets.append(
-                PlaybackTarget(
-                    id=ANDROID_VLC_TARGET,
-                    label="VLC Android",
-                    kind="android",
-                    package="org.videolan.vlc",
-                )
-            )
+        installed_packages = _list_installed_android_packages()
+        targets: list[PlaybackTarget] = []
+        for target_id in _ANDROID_TARGET_ORDER:
+            candidates = _target_package_candidates(target_id)
+            detected = _target_detected(target_id, installed_packages)
+            label = _ANDROID_TARGET_LABELS[target_id]
+            if installed_packages and not detected:
+                label = f"{label} (not detected)"
 
-        if shutil.which("termux-open-url") or shutil.which("am"):
             targets.append(
                 PlaybackTarget(
-                    id=ANDROID_CHOOSER_TARGET,
-                    label="Android chooser",
+                    id=target_id,
+                    label=label,
                     kind="android",
+                    package=candidates[0] if candidates else None,
+                    detected=detected,
                 )
             )
+        return targets
 
+    targets = [PlaybackTarget(id=AUTO_TARGET, label="Auto (Recommended)", kind="virtual")]
     if shutil.which("mpv"):
         targets.append(PlaybackTarget(id=CLI_MPV_TARGET, label="mpv (CLI)", kind="cli"))
     if shutil.which("vlc"):
         targets.append(PlaybackTarget(id=CLI_VLC_TARGET, label="VLC (CLI)", kind="cli"))
-
-    if not is_termux_environment():
-        targets.append(PlaybackTarget(id=BROWSER_TARGET, label="System browser", kind="browser"))
-
+    targets.append(PlaybackTarget(id=BROWSER_TARGET, label="System browser", kind="browser"))
     return targets
-
-
-def _available_target_ids() -> set[str]:
-    return {target.id for target in list_playback_targets() if target.id != AUTO_TARGET}
 
 
 def _normalize_target_alias(target_id: str | None) -> str:
@@ -171,37 +172,61 @@ def _normalize_target_alias(target_id: str | None) -> str:
     if not raw:
         return AUTO_TARGET
 
-    if raw in {AUTO_TARGET, ANDROID_MPV_TARGET, ANDROID_MX_PRO_TARGET, ANDROID_MX_FREE_TARGET}:
-        return raw
-    if raw in {ANDROID_VLC_TARGET, ANDROID_CHOOSER_TARGET, CLI_MPV_TARGET, CLI_VLC_TARGET, BROWSER_TARGET}:
+    known_targets = {
+        AUTO_TARGET,
+        ANDROID_MPV_TARGET,
+        ANDROID_MPVEX_TARGET,
+        ANDROID_VLC_TARGET,
+        ANDROID_MX_PRO_TARGET,
+        ANDROID_MX_FREE_TARGET,
+        CLI_MPV_TARGET,
+        CLI_VLC_TARGET,
+        BROWSER_TARGET,
+    }
+    if raw in known_targets:
         return raw
 
-    if raw in {"android", "chooser"}:
-        return ANDROID_CHOOSER_TARGET
-    if raw in {"android-mpv", "mpv-android", "android_mpv"}:
-        return ANDROID_MPV_TARGET
-    if raw in {"mx", "mx-player", "mx_player"}:
-        return "mx_auto"
-    if raw in {"vlc", "android-vlc", "vlc-android"}:
-        return ANDROID_VLC_TARGET if is_termux_environment() else CLI_VLC_TARGET
-    if raw == "mpv":
-        return ANDROID_MPV_TARGET if is_termux_environment() else CLI_MPV_TARGET
-    if raw in {"mpv-cli", "desktop", "cli-mpv"}:
-        return CLI_MPV_TARGET
-
-    return raw
+    alias_map = {
+        "android": ANDROID_MPV_TARGET,
+        "chooser": ANDROID_MPV_TARGET,
+        "android-mpv": ANDROID_MPV_TARGET,
+        "mpv-android": ANDROID_MPV_TARGET,
+        "mpv": ANDROID_MPV_TARGET if is_termux_environment() else CLI_MPV_TARGET,
+        "mpvex": ANDROID_MPVEX_TARGET,
+        "mpv-ex": ANDROID_MPVEX_TARGET,
+        "vlc": ANDROID_VLC_TARGET if is_termux_environment() else CLI_VLC_TARGET,
+        "android-vlc": ANDROID_VLC_TARGET,
+        "vlc-android": ANDROID_VLC_TARGET,
+        "mx": ANDROID_MX_PRO_TARGET,
+        "mx-pro": ANDROID_MX_PRO_TARGET,
+        "mx-free": ANDROID_MX_FREE_TARGET,
+        "mx-player-pro": ANDROID_MX_PRO_TARGET,
+        "mx-player-free": ANDROID_MX_FREE_TARGET,
+        "mpv-cli": CLI_MPV_TARGET,
+        "desktop": CLI_MPV_TARGET,
+        "cli-mpv": CLI_MPV_TARGET,
+    }
+    return alias_map.get(raw, raw)
 
 
 def default_playback_target_id() -> str:
     """Resolve default target id from env and detected devices."""
 
     requested = _normalize_target_alias(os.getenv("MOVIEBOX_PLAYBACK_TARGET", AUTO_TARGET))
-    order = resolve_playback_attempt_order(requested)
-    if not order:
-        return AUTO_TARGET
-    if requested == AUTO_TARGET:
-        return AUTO_TARGET
-    return order[0]
+
+    if is_termux_environment():
+        if requested in _ANDROID_TARGET_IDS | {CLI_MPV_TARGET, CLI_VLC_TARGET}:
+            return requested
+
+        termux_targets = list_playback_targets()
+        for target in termux_targets:
+            if target.detected:
+                return target.id
+        return ANDROID_MPV_TARGET
+
+    if requested in {CLI_MPV_TARGET, CLI_VLC_TARGET, BROWSER_TARGET}:
+        return requested
+    return AUTO_TARGET
 
 
 def is_android_target(target_id: str) -> bool:
@@ -209,75 +234,36 @@ def is_android_target(target_id: str) -> bool:
 
 
 def should_use_android_chooser() -> bool:
-    """Backward-compatible helper used by TUI flow logic."""
-
-    requested = _normalize_target_alias(os.getenv("MOVIEBOX_PLAYBACK_TARGET", AUTO_TARGET))
-    if requested in {"mx_auto", ANDROID_CHOOSER_TARGET, ANDROID_MX_PRO_TARGET, ANDROID_MX_FREE_TARGET}:
-        return True
+    """Backward-compatible helper retained for legacy callers."""
 
     if not is_termux_environment():
         return False
 
-    return requested in {
-        AUTO_TARGET,
-        ANDROID_MPV_TARGET,
-        ANDROID_VLC_TARGET,
-        ANDROID_CHOOSER_TARGET,
-        "mx_auto",
-        ANDROID_MX_PRO_TARGET,
-        ANDROID_MX_FREE_TARGET,
-    }
+    requested = _normalize_target_alias(os.getenv("MOVIEBOX_PLAYBACK_TARGET", AUTO_TARGET))
+    return requested in {AUTO_TARGET, *list(_ANDROID_TARGET_IDS)}
 
 
 def resolve_playback_attempt_order(target_id: str | None) -> list[str]:
     """Resolve player fallback order from selected target."""
 
-    available = _available_target_ids()
-    if not available:
-        return []
-
     normalized = _normalize_target_alias(target_id)
 
-    if normalized == "mx_auto":
-        if ANDROID_MX_PRO_TARGET in available:
-            normalized = ANDROID_MX_PRO_TARGET
-        elif ANDROID_MX_FREE_TARGET in available:
-            normalized = ANDROID_MX_FREE_TARGET
-        else:
-            normalized = AUTO_TARGET
+    if is_termux_environment():
+        if normalized in _ANDROID_TARGET_IDS | {CLI_MPV_TARGET, CLI_VLC_TARGET}:
+            return [normalized]
 
-    if normalized == AUTO_TARGET:
-        preferred_order = [
-            ANDROID_MPV_TARGET,
-            ANDROID_MX_PRO_TARGET,
-            ANDROID_MX_FREE_TARGET,
-            ANDROID_VLC_TARGET,
-            ANDROID_CHOOSER_TARGET,
-            CLI_MPV_TARGET,
-            CLI_VLC_TARGET,
-            BROWSER_TARGET,
-        ]
-        return [target for target in preferred_order if target in available]
+        if normalized == AUTO_TARGET:
+            detected_targets = [target.id for target in list_playback_targets() if target.detected]
+            return detected_targets or list(_ANDROID_TARGET_ORDER)
 
-    if normalized not in available:
-        return resolve_playback_attempt_order(AUTO_TARGET)
+        return [default_playback_target_id()]
 
-    fallback_order = [normalized]
-    if is_termux_environment() and normalized in _ANDROID_TARGET_IDS and normalized != ANDROID_CHOOSER_TARGET:
-        if ANDROID_CHOOSER_TARGET in available:
-            fallback_order.append(ANDROID_CHOOSER_TARGET)
+    available = {target.id for target in list_playback_targets() if target.id != AUTO_TARGET}
+    if normalized in available:
+        return [normalized]
 
-    return fallback_order
-
-
-def _open_android_chooser(url: str) -> bool:
-    if shutil.which("termux-open-url"):
-        return subprocess.run(["termux-open-url", url], check=False).returncode == 0
-
-    if shutil.which("am"):
-        return _run_android_intent(["am", "start", "-a", "android.intent.action.VIEW", "-d", url])
-
-    return False
+    preferred_order = [CLI_MPV_TARGET, CLI_VLC_TARGET, BROWSER_TARGET]
+    return [target_id for target_id in preferred_order if target_id in available]
 
 
 def _android_header_array(headers: dict[str, str]) -> str | None:
@@ -287,9 +273,16 @@ def _android_header_array(headers: dict[str, str]) -> str | None:
         value_text = str(value).strip()
         if key_text and value_text and "," not in key_text and "," not in value_text:
             pairs.extend([key_text, value_text])
+
     if not pairs:
         return None
     return ",".join(pairs)
+
+
+def _with_title_extra(command: list[str], media_title: str | None) -> list[str]:
+    if not media_title:
+        return command
+    return [*command, "--es", "title", media_title]
 
 
 def _with_subtitle_extras(command: list[str], subtitle_urls: list[str]) -> list[str]:
@@ -297,18 +290,105 @@ def _with_subtitle_extras(command: list[str], subtitle_urls: list[str]) -> list[
         return command
 
     primary = subtitle_urls[0]
+    subtitle_name = Path(urlparse(primary).path).name or "subtitle.srt"
+
     return [
         *command,
+        "--es",
+        "subs",
+        primary,
+        "--es",
+        "subs.name",
+        subtitle_name,
+        "--es",
+        "subtitles_location",
+        primary,
         "--eu",
         "subs",
         primary,
         "--eu",
         "subs.enable",
         primary,
-        "--es",
-        "subtitles_location",
-        primary,
     ]
+
+
+def _build_android_intent_commands(
+    target_id: str,
+    stream_url: str,
+    headers: dict[str, str],
+    subtitle_urls: list[str],
+    media_title: str | None,
+) -> list[list[str]]:
+    base = ["am", "start", "-a", "android.intent.action.VIEW"]
+
+    commands: list[list[str]] = []
+
+    if target_id in {ANDROID_MPV_TARGET, ANDROID_MPVEX_TARGET}:
+        package = _target_package_candidates(target_id)[0]
+        variants = [
+            [*base, "-t", "video/any", "-n", f"{package}/.MPVActivity", "-d", stream_url],
+            [*base, "-t", "video/any", "-n", f"{package}/.MainActivity", "-d", stream_url],
+            [*base, "-t", "video/any", "-p", package, "-d", stream_url],
+            [*base, "-t", "video/*", "-p", package, "-d", stream_url],
+        ]
+        commands = [_with_title_extra(variant, media_title) for variant in variants]
+
+    elif target_id == ANDROID_VLC_TARGET:
+        package = _target_package_candidates(target_id)[0]
+        variants = [
+            [*base, "-t", "video/*", "-p", package, "-d", stream_url],
+            [
+                *base,
+                "-n",
+                "org.videolan.vlc/org.videolan.vlc.gui.video.VideoPlayerActivity",
+                "-d",
+                stream_url,
+            ],
+        ]
+        commands = [_with_title_extra(variant, media_title) for variant in variants]
+
+    elif target_id == ANDROID_MX_PRO_TARGET:
+        package = _target_package_candidates(target_id)[0]
+        variants = [
+            [
+                *base,
+                "-t",
+                "video/any",
+                "-n",
+                "com.mxtech.videoplayer.pro/com.mxtech.videoplayer.ActivityScreen",
+                "-d",
+                stream_url,
+            ],
+            [*base, "-t", "video/*", "-p", package, "-d", stream_url],
+        ]
+        commands = [_with_title_extra(variant, media_title) for variant in variants]
+
+    elif target_id == ANDROID_MX_FREE_TARGET:
+        package = _target_package_candidates(target_id)[0]
+        variants = [
+            [
+                *base,
+                "-t",
+                "video/any",
+                "-n",
+                "com.mxtech.videoplayer.ad/com.mxtech.videoplayer.ad.ActivityScreen",
+                "-d",
+                stream_url,
+            ],
+            [*base, "-t", "video/*", "-p", package, "-d", stream_url],
+        ]
+        commands = [_with_title_extra(variant, media_title) for variant in variants]
+
+    if target_id in {ANDROID_MX_PRO_TARGET, ANDROID_MX_FREE_TARGET}:
+        header_array = _android_header_array(headers)
+        if header_array:
+            commands = [[*command, "--esa", "headers", header_array] for command in commands]
+
+    if subtitle_urls:
+        with_subs = [_with_subtitle_extras(command, subtitle_urls) for command in commands]
+        return [*with_subs, *commands]
+
+    return commands
 
 
 def _launch_android_target(
@@ -318,111 +398,35 @@ def _launch_android_target(
     subtitle_urls: list[str],
     media_title: str | None,
 ) -> PlaybackResult:
-    if not shutil.which("am") and target_id != ANDROID_CHOOSER_TARGET:
+    if not shutil.which("am"):
         return PlaybackResult(False, "Android activity manager (am) not available", target_id)
 
-    if target_id == ANDROID_CHOOSER_TARGET:
-        if _open_android_chooser(stream_url):
-            return PlaybackResult(True, "Opened Android app chooser", target_id)
-        return PlaybackResult(False, "Failed to open Android chooser", target_id)
+    if target_id not in _ANDROID_TARGET_IDS:
+        return PlaybackResult(False, f"Unsupported Android target: {target_id}", target_id)
 
-    if target_id == ANDROID_MPV_TARGET:
-        base = [
-            "am",
-            "start",
-            "-a",
-            "android.intent.action.VIEW",
-            "-t",
-            "video/any",
-            "-p",
-            "is.xyz.mpv",
-            "-d",
-            stream_url,
-        ]
-        if media_title:
-            base.extend(["--es", "title", media_title])
+    installed_packages = _list_installed_android_packages()
+    detected = _target_detected(target_id, installed_packages)
 
-        command = _with_subtitle_extras(base, subtitle_urls)
+    commands = _build_android_intent_commands(
+        target_id=target_id,
+        stream_url=stream_url,
+        headers=headers,
+        subtitle_urls=subtitle_urls,
+        media_title=media_title,
+    )
+
+    for command in commands:
         if _run_android_intent(command):
-            return PlaybackResult(True, "Opened MPV Android app", target_id)
+            return PlaybackResult(True, f"Opened {_ANDROID_TARGET_LABELS[target_id]}", target_id)
 
-        if subtitle_urls and _run_android_intent(base):
-            return PlaybackResult(
-                True,
-                "Opened MPV Android app without external subtitle extras",
-                target_id,
-            )
+    if installed_packages and not detected:
+        return PlaybackResult(
+            False,
+            f"Failed to open {_ANDROID_TARGET_LABELS[target_id]} (package not detected)",
+            target_id,
+        )
 
-        return PlaybackResult(False, "Failed to open MPV Android app", target_id)
-
-    if target_id in {ANDROID_MX_PRO_TARGET, ANDROID_MX_FREE_TARGET}:
-        if target_id == ANDROID_MX_PRO_TARGET:
-            component = "com.mxtech.videoplayer.pro/com.mxtech.videoplayer.ActivityScreen"
-            label = "MX Player Pro"
-        else:
-            component = "com.mxtech.videoplayer.ad/com.mxtech.videoplayer.ad.ActivityScreen"
-            label = "MX Player"
-
-        base = [
-            "am",
-            "start",
-            "-a",
-            "android.intent.action.VIEW",
-            "-t",
-            "video/any",
-            "-n",
-            component,
-            "-d",
-            stream_url,
-        ]
-        if media_title:
-            base.extend(["--es", "title", media_title])
-
-        header_array = _android_header_array(headers)
-        if header_array:
-            base.extend(["--esa", "headers", header_array])
-
-        command = _with_subtitle_extras(base, subtitle_urls)
-        if _run_android_intent(command):
-            return PlaybackResult(True, f"Opened {label}", target_id)
-
-        if subtitle_urls and _run_android_intent(base):
-            return PlaybackResult(True, f"Opened {label} without external subtitle extras", target_id)
-
-        return PlaybackResult(False, f"Failed to open {label}", target_id)
-
-    if target_id == ANDROID_VLC_TARGET:
-        base = [
-            "am",
-            "start",
-            "-a",
-            "android.intent.action.VIEW",
-            "-t",
-            "video/*",
-            "-p",
-            "org.videolan.vlc",
-            "-d",
-            stream_url,
-        ]
-        if media_title:
-            base.extend(["--es", "title", media_title])
-        if subtitle_urls:
-            base.extend(["--es", "subtitles_location", subtitle_urls[0]])
-
-        if _run_android_intent(base):
-            return PlaybackResult(True, "Opened VLC Android", target_id)
-
-        if subtitle_urls:
-            base_without_subtitle = [token for token in base]
-            while "subtitles_location" in base_without_subtitle:
-                index = base_without_subtitle.index("subtitles_location")
-                del base_without_subtitle[index - 1 : index + 2]
-            if _run_android_intent(base_without_subtitle):
-                return PlaybackResult(True, "Opened VLC Android without subtitle extras", target_id)
-
-        return PlaybackResult(False, "Failed to open VLC Android", target_id)
-
-    return PlaybackResult(False, f"Unsupported Android target: {target_id}", target_id)
+    return PlaybackResult(False, f"Failed to open {_ANDROID_TARGET_LABELS[target_id]}", target_id)
 
 
 def _open_url_fallback(url: str) -> bool:
@@ -529,16 +533,15 @@ def play_stream(
 
         if result.success:
             return result
+
         last_failure = result.message
 
     if is_termux_environment() and not allow_browser_fallback:
         return PlaybackResult(
-            False,
-            last_failure or "All Android player launch attempts failed",
-            attempt_order[-1],
+            False, last_failure or "All Android player launch attempts failed", attempt_order[-1]
         )
 
-    if BROWSER_TARGET not in attempt_order and allow_browser_fallback:
+    if allow_browser_fallback and BROWSER_TARGET not in attempt_order:
         opened = _open_url_fallback(stream_url)
         if opened:
             return PlaybackResult(True, "Opened URL via browser fallback", BROWSER_TARGET)

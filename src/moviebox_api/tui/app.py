@@ -483,7 +483,7 @@ class InteractiveTextualApp(App[None]):
         if default_target in available_values:
             player_select.value = default_target
         else:
-            player_select.value = AUTO_TARGET
+            player_select.value = str(options[0][1])
 
     def action_request_quit(self) -> None:
         self.exit()

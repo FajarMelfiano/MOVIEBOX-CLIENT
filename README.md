@@ -11,7 +11,7 @@ Unofficial Python client for searching, streaming, and downloading movies or TV 
 - Subtitle source selection (`provider`, `opensubtitles`, `subdl`, `subsource`, `all`).
 - Secret management for subtitle API keys (`secret-set`, `secret-status`, `secret-unset`).
 - CLI audio fallback preference for downloads (`--audio`).
-- Termux-aware playback with player detection + selector (MPV Android, MX, VLC, chooser).
+- Termux-aware playback with explicit player selector (MPV, MPVEX, VLC, MX Pro, MX Free).
 
 ## Quick install
 
@@ -174,9 +174,9 @@ Manual completion and auto-venv setup instructions are documented in `INSTALL.md
 
 - Install Termux from F-Droid for best compatibility.
 - Playback defaults to MPV Android app in Termux mode, with detected fallback order.
-- You can choose Android player from Run page (`MPV`, `MX`, `VLC`, `chooser`) when installed.
+- You can choose Android player from Run page (`MPV`, `MPVEX`, `VLC`, `MX Player Pro`, `MX Player Free`).
 - Browser fallback is disabled in Termux external-player mode to avoid accidental auto-download.
-- Set `MOVIEBOX_PLAYBACK_TARGET` to override defaults (`auto`, `android-mpv`, `mx`, `vlc`, `chooser`, `mpv-cli`).
+- Set `MOVIEBOX_PLAYBACK_TARGET` to override defaults (`auto`, `android-mpv`, `mpvex`, `mx`, `vlc`, `mpv-cli`).
 - External subtitle file auto-attach depends on per-player Android intent support.
 - If terminal keyboard does not appear in Textual search input, use `Type (Termux)` button (uses `termux-dialog`).
 

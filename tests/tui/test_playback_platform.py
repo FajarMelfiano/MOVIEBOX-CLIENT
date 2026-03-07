@@ -18,56 +18,52 @@ def test_is_termux_environment_detected_by_prefix(monkeypatch: pytest.MonkeyPatc
     assert playback.is_termux_environment() is True
 
 
-def test_should_use_android_chooser_honors_explicit_targets(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MOVIEBOX_PLAYBACK_TARGET", "android")
-    monkeypatch.setattr(playback.shutil, "which", lambda _name: None)
-    assert playback.should_use_android_chooser() is True
-
-    monkeypatch.setenv("MOVIEBOX_PLAYBACK_TARGET", "mpv")
-    assert playback.should_use_android_chooser() is False
-
-
-def test_should_use_android_chooser_termux_mpv_prefers_android_app(
+def test_list_playback_targets_termux_contains_fixed_android_player_choices(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("TERMUX_VERSION", "0.119")
-    monkeypatch.setenv("MOVIEBOX_PLAYBACK_TARGET", "mpv")
-    monkeypatch.setattr(playback.shutil, "which", lambda _name: None)
-
-    assert playback.should_use_android_chooser() is True
-
-
-def test_should_use_android_chooser_auto_uses_termux(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MOVIEBOX_PLAYBACK_TARGET", "auto")
-    monkeypatch.setenv("TERMUX_VERSION", "0.119")
-    monkeypatch.setattr(playback.shutil, "which", lambda _name: None)
-
-    assert playback.should_use_android_chooser() is True
-
-
-def test_list_playback_targets_detects_android_players(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("TERMUX_VERSION", "0.119")
     monkeypatch.setattr(
         playback,
         "_list_installed_android_packages",
         lambda: {
             "is.xyz.mpv",
+            "app.marlboroadvance.mpvex",
+            "com.mxtech.videoplayer.pro",
             "com.mxtech.videoplayer.ad",
             "org.videolan.vlc",
         },
     )
 
-    def _which(name: str) -> str | None:
-        return "/usr/bin/tool" if name in {"am", "termux-open-url"} else None
+    targets = playback.list_playback_targets()
+    target_ids = [target.id for target in targets]
 
-    monkeypatch.setattr(playback.shutil, "which", _which)
+    assert target_ids == [
+        playback.ANDROID_MPV_TARGET,
+        playback.ANDROID_MPVEX_TARGET,
+        playback.ANDROID_VLC_TARGET,
+        playback.ANDROID_MX_PRO_TARGET,
+        playback.ANDROID_MX_FREE_TARGET,
+    ]
 
-    target_ids = {target.id for target in playback.list_playback_targets()}
-    assert playback.AUTO_TARGET in target_ids
-    assert playback.ANDROID_MPV_TARGET in target_ids
-    assert playback.ANDROID_MX_FREE_TARGET in target_ids
-    assert playback.ANDROID_VLC_TARGET in target_ids
-    assert playback.ANDROID_CHOOSER_TARGET in target_ids
+
+def test_default_target_prefers_first_detected_android_player(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("TERMUX_VERSION", "0.119")
+    monkeypatch.delenv("MOVIEBOX_PLAYBACK_TARGET", raising=False)
+    monkeypatch.setattr(
+        playback,
+        "_list_installed_android_packages",
+        lambda: {"app.marlboroadvance.mpvex", "org.videolan.vlc"},
+    )
+
+    assert playback.default_playback_target_id() == playback.ANDROID_MPVEX_TARGET
+
+
+def test_resolve_attempt_order_uses_explicit_termux_player(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("TERMUX_VERSION", "0.119")
+    monkeypatch.setattr(playback, "_list_installed_android_packages", lambda: set())
+
+    order = playback.resolve_playback_attempt_order(playback.ANDROID_MX_PRO_TARGET)
+    assert order == [playback.ANDROID_MX_PRO_TARGET]
 
 
 def test_play_stream_termux_blocks_browser_fallback(monkeypatch: pytest.MonkeyPatch):
