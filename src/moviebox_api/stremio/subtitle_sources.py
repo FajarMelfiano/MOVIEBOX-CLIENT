@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from moviebox_api.language import normalize_language_id
+from moviebox_api.language import normalize_language_id, to_iso639_1
 from moviebox_api.security.secrets import get_secret
 
 SUBDL_API_KEY_ENV = "MOVIEBOX_SUBDL_API_KEY"
@@ -28,6 +28,8 @@ _DEFAULT_HEADERS = {
     "Accept-Language": "en-US,en;q=0.5",
 }
 
+_SUBSOURCE_KEY_VALIDATION_CACHE: dict[str, bool] = {}
+
 
 @dataclass(slots=True)
 class ExternalSubtitle:
@@ -40,12 +42,20 @@ class ExternalSubtitle:
 
 
 def _normalise_language_code(language: str | None) -> str:
-    return normalize_language_id(language)
+    canonical = normalize_language_id(language)
+    if canonical == "unknown":
+        return "unknown"
+
+    iso639_1 = to_iso639_1(canonical)
+    if iso639_1:
+        return iso639_1
+
+    return canonical
 
 
 def _preferred_language_codes(preferred_languages: list[str] | None) -> list[str]:
     if not preferred_languages:
-        return ["eng", "ind"]
+        return ["en", "id"]
 
     values: list[str] = []
     for language in preferred_languages:
@@ -56,7 +66,11 @@ def _preferred_language_codes(preferred_languages: list[str] | None) -> list[str
             values.append(code)
 
     if not values:
-        return ["eng", "ind"]
+        return ["en", "id"]
+
+    for fallback in ("en", "id"):
+        if fallback not in values:
+            values.append(fallback)
 
     return values[:3]
 
@@ -175,6 +189,9 @@ async def _fetch_subsource(
     if not api_key:
         return []
 
+    if not await _is_subsource_api_key_valid(api_key):
+        raise RuntimeError("SubSource API key is invalid or expired")
+
     language_codes = _preferred_language_codes(preferred_languages)
     config_path = _build_subsource_config_path(api_key, language_codes)
     url = f"{_SUBSOURCE_BASE_URL}/{config_path}/subtitles/{content_type}/{video_id}.json"
@@ -198,6 +215,30 @@ async def _fetch_subsource(
         mapped.append(subtitle)
 
     return mapped
+
+
+async def _is_subsource_api_key_valid(api_key: str) -> bool:
+    cached = _SUBSOURCE_KEY_VALIDATION_CACHE.get(api_key)
+    if cached is not None:
+        return cached
+
+    validation_url = f"{_SUBSOURCE_BASE_URL}/api/validate-api-key"
+    try:
+        async with httpx.AsyncClient(
+            headers={**_DEFAULT_HEADERS, "Content-Type": "application/json"},
+            follow_redirects=True,
+            timeout=httpx.Timeout(15.0),
+        ) as client:
+            response = await client.post(validation_url, json={"apiKey": api_key})
+            response.raise_for_status()
+            payload = response.json()
+            is_valid = bool(isinstance(payload, dict) and payload.get("valid") is True)
+    except Exception:
+        # Do not hard-fail on temporary network/endpoint issues.
+        is_valid = True
+
+    _SUBSOURCE_KEY_VALIDATION_CACHE[api_key] = is_valid
+    return is_valid
 
 
 async def fetch_external_subtitles(
@@ -224,6 +265,7 @@ async def fetch_external_subtitles(
 
     subtitles: list[ExternalSubtitle] = []
     seen_urls: set[str] = set()
+    source_errors: list[str] = []
 
     for source_name in requested_sources:
         try:
@@ -233,7 +275,8 @@ async def fetch_external_subtitles(
                 fetched = await _fetch_subdl(video_id, valid_content_type, preferred_languages)
             else:
                 fetched = await _fetch_subsource(video_id, valid_content_type, preferred_languages)
-        except Exception:
+        except Exception as exc:
+            source_errors.append(f"{source_name}: {exc}")
             fetched = []
 
         for subtitle in fetched:
@@ -241,5 +284,8 @@ async def fetch_external_subtitles(
                 continue
             seen_urls.add(subtitle.url)
             subtitles.append(subtitle)
+
+    if not subtitles and source_errors:
+        raise RuntimeError("; ".join(source_errors))
 
     return subtitles
