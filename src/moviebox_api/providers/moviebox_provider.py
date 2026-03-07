@@ -83,6 +83,7 @@ class MovieboxProvider(BaseStreamProvider):
                 source="moviebox",
                 quality=f"{media.resolution}P",
                 size=media.size,
+                audio=media.audio,
                 subtitles=subtitles,
             )
             for media in sorted(metadata.downloads, key=lambda entry: entry.resolution, reverse=True)

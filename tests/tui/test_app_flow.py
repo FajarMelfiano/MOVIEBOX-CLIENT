@@ -248,3 +248,33 @@ async def test_subtitle_selection_status_uses_full_language_name():
         table = app.query_one("#subtitle_tracks_table", DataTable)
         row = table.get_row_at(0)
         assert row[2] == "Indonesian"
+
+
+@pytest.mark.asyncio
+async def test_android_subtitle_attempts_fallback_to_provider_language_priority():
+    app = InteractiveTextualApp()
+
+    async with app.run_test() as _pilot:
+        app.preferred_subtitle_language_id = "ind"
+        app.selected_subtitles = [
+            SubtitleChoice(
+                url="https://external.example/sub-ind.srt",
+                language="Indonesian",
+                language_id="ind",
+                label="External Indonesian",
+                source="subdl",
+            )
+        ]
+        app.resolved_subtitles = [
+            SimpleNamespace(url="https://provider.example/sub-ar.srt", language="Arabic"),
+            SimpleNamespace(url="https://provider.example/sub-ind.srt", language="Indonesian"),
+        ]
+        stream = SimpleNamespace(
+            subtitles=[SimpleNamespace(url="https://provider.example/sub-ind.srt", language="Indonesian")]
+        )
+
+        attempts = app._build_android_subtitle_attempts(stream)
+
+        assert attempts[0] == ["https://external.example/sub-ind.srt"]
+        assert attempts[1][0] == "https://provider.example/sub-ind.srt"
+        assert attempts[-1] == []

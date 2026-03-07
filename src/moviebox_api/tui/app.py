@@ -55,6 +55,7 @@ from moviebox_api.tui.playback import (
     is_termux_environment,
     list_playback_targets,
     play_stream,
+    probe_stream_access,
 )
 
 
@@ -1089,8 +1090,7 @@ class InteractiveTextualApp(App[None]):
 
         selected_stream = self.selected_stream
         selected_target = self._selected_player_target_id()
-        subtitle_urls = [subtitle.url for subtitle in self.selected_subtitles if subtitle.url]
-        stream_candidates = self._stream_fallback_candidates(selected_stream)
+        stream_candidates = await self._collect_playback_stream_candidates(selected_stream)
         allow_browser_fallback = not is_termux_environment()
         media_title = self.selected_item.title if self.selected_item else ""
         last_failure = "all stream and player attempts failed"
@@ -1101,9 +1101,56 @@ class InteractiveTextualApp(App[None]):
                 headers = self._merged_request_headers(stream.headers)
                 subtitle_paths: list[Path] = []
                 temp_dir: tempfile.TemporaryDirectory[str] | None = None
+                attempt_status_suffix = ""
 
                 try:
-                    if self.selected_subtitles and not is_android_target(selected_target):
+                    if is_android_target(selected_target):
+                        self.query_one("#loading_label", Static).update(
+                            f"Checking stream access ({candidate_index}/{len(stream_candidates)})..."
+                        )
+                        is_reachable, reason = await asyncio.to_thread(
+                            probe_stream_access, stream.url, headers
+                        )
+                        if not is_reachable:
+                            last_failure = f"{stream.source}: {reason}"
+                            continue
+
+                        subtitle_attempts = self._build_android_subtitle_attempts(stream)
+                        for subtitle_attempt_index, subtitle_urls in enumerate(subtitle_attempts, start=1):
+                            self.query_one("#loading_label", Static).update(
+                                f"Launching player (stream {candidate_index}/{len(stream_candidates)})..."
+                            )
+                            result = await asyncio.to_thread(
+                                play_stream,
+                                stream.url,
+                                headers,
+                                [],
+                                subtitle_urls=subtitle_urls,
+                                target_id=selected_target,
+                                media_title=media_title,
+                                allow_browser_fallback=allow_browser_fallback,
+                            )
+
+                            if result.success:
+                                if subtitle_attempt_index == 2 and subtitle_urls:
+                                    attempt_status_suffix = " (subtitle fallback: provider)"
+                                elif subtitle_attempt_index > 2 or not subtitle_urls:
+                                    attempt_status_suffix = " (without subtitles)"
+
+                                self.selected_stream = stream
+                                self._update_subtitle_stream_label()
+                                self._update_run_summary()
+                                suffix = (
+                                    f" (fallback stream #{candidate_index})" if candidate_index > 1 else ""
+                                )
+                                self._set_status(f"{result.message}{suffix}{attempt_status_suffix}")
+                                return True
+
+                            last_failure = result.message
+
+                        continue
+
+                    if self.selected_subtitles:
                         self.query_one("#loading_label", Static).update("Preparing subtitles...")
                         temp_dir = tempfile.TemporaryDirectory(prefix="moviebox-tui-subtitles-")
                         subtitle_paths = await asyncio.to_thread(
@@ -1113,6 +1160,7 @@ class InteractiveTextualApp(App[None]):
                             headers,
                         )
 
+                    subtitle_urls = [subtitle.url for subtitle in self.selected_subtitles if subtitle.url]
                     self.query_one("#loading_label", Static).update(
                         f"Launching player (stream {candidate_index}/{len(stream_candidates)})..."
                     )
@@ -1139,7 +1187,7 @@ class InteractiveTextualApp(App[None]):
 
                     if self.selected_subtitles:
                         self.query_one("#loading_label", Static).update(
-                            "Retrying launch without subtitle extras..."
+                            "Retrying launch without subtitles..."
                         )
                         no_subtitle_result = await asyncio.to_thread(
                             play_stream,
@@ -1156,9 +1204,7 @@ class InteractiveTextualApp(App[None]):
                             self._update_subtitle_stream_label()
                             self._update_run_summary()
                             suffix = f" (fallback stream #{candidate_index})" if candidate_index > 1 else ""
-                            self._set_status(
-                                f"{no_subtitle_result.message}{suffix} (without external subtitles)"
-                            )
+                            self._set_status(f"{no_subtitle_result.message}{suffix} (without subtitles)")
                             return True
                         last_failure = no_subtitle_result.message
                 finally:
@@ -1270,30 +1316,19 @@ class InteractiveTextualApp(App[None]):
             self._update_run_summary()
             return
 
-        normalized_preferred_audio = normalize_language_id(preferred_audio)
-
-        def _score(stream) -> int:
-            score = 0
-            if stream.source == preferred_source:
-                score -= 8
-            if stream.quality == preferred_quality:
-                score -= 6
-            stream_audio = normalize_language_id(self._stream_audio_label(stream))
-            if normalized_preferred_audio != "unknown" and stream_audio == normalized_preferred_audio:
-                score -= 10
-            elif stream_audio != "unknown":
-                score -= 2
-            return score
-
-        preferred_index = 0
-        best_score: int | None = None
+        ranked_streams = self._rank_stream_candidates(
+            self.resolved_streams,
+            preferred_source=preferred_source,
+            preferred_quality=preferred_quality,
+            preferred_audio=preferred_audio,
+        )
+        chosen_stream = ranked_streams[0]
         for index, stream in enumerate(self.resolved_streams):
-            candidate_score = _score(stream)
-            if best_score is None or candidate_score < best_score:
-                best_score = candidate_score
-                preferred_index = index
+            if stream is chosen_stream:
+                self._handle_stream_selected(index, navigate=False)
+                return
 
-        self._handle_stream_selected(preferred_index, navigate=False)
+        self._handle_stream_selected(0, navigate=False)
 
     async def _download_stream_to_path(
         self,
@@ -1612,26 +1647,43 @@ class InteractiveTextualApp(App[None]):
         if not self.resolved_streams:
             return [selected_stream]
 
-        preferred_audio = normalize_language_id(self._stream_audio_label(selected_stream))
-        preferred_quality = str(getattr(selected_stream, "quality", "") or "").strip().lower()
-        preferred_source = str(getattr(selected_stream, "source", "") or "").strip().lower()
-        preferred_url = str(getattr(selected_stream, "url", "") or "").strip()
+        return self._rank_stream_candidates(
+            self.resolved_streams,
+            preferred_source=str(getattr(selected_stream, "source", "") or ""),
+            preferred_quality=getattr(selected_stream, "quality", None),
+            preferred_audio=self._stream_audio_label(selected_stream),
+            preferred_url=str(getattr(selected_stream, "url", "") or ""),
+        )
+
+    def _rank_stream_candidates(
+        self,
+        streams: list,
+        *,
+        preferred_source: str,
+        preferred_quality: str | None,
+        preferred_audio: str | None,
+        preferred_url: str | None = None,
+    ) -> list:
+        normalized_preferred_audio = normalize_language_id(preferred_audio)
+        preferred_source_text = preferred_source.strip().lower()
+        preferred_quality_text = str(preferred_quality or "").strip().lower()
+        preferred_url_text = str(preferred_url or "").strip()
 
         scored: list[tuple[int, int, object]] = []
-        for index, stream in enumerate(self.resolved_streams):
+        for index, stream in enumerate(streams):
             stream_url = str(getattr(stream, "url", "") or "").strip()
             stream_source = str(getattr(stream, "source", "") or "").strip().lower()
             stream_quality = str(getattr(stream, "quality", "") or "").strip().lower()
             stream_audio = normalize_language_id(self._stream_audio_label(stream))
 
             rank = 100
-            if stream_url and stream_url == preferred_url:
+            if preferred_url_text and stream_url == preferred_url_text:
                 rank -= 60
-            if stream_source == preferred_source:
+            if stream_source == preferred_source_text:
                 rank -= 20
-            if stream_quality and stream_quality == preferred_quality:
+            if stream_quality and stream_quality == preferred_quality_text:
                 rank -= 12
-            if preferred_audio != "unknown" and stream_audio == preferred_audio:
+            if normalized_preferred_audio != "unknown" and stream_audio == normalized_preferred_audio:
                 rank -= 15
             elif stream_audio != "unknown":
                 rank -= 3
@@ -1640,6 +1692,95 @@ class InteractiveTextualApp(App[None]):
 
         scored.sort(key=lambda item: (item[0], item[1]))
         return [stream for _, _, stream in scored]
+
+    async def _collect_playback_stream_candidates(self, selected_stream) -> list:
+        candidates = list(self._stream_fallback_candidates(selected_stream))
+        seen_urls = {str(getattr(stream, "url", "") or "").strip() for stream in candidates}
+
+        if self.selected_item is None or self.selected_provider_name == "moviebox":
+            return candidates
+
+        season, episode = self._read_season_episode()
+        if season is None or episode is None:
+            return candidates
+
+        try:
+            _, moviebox_streams, _ = await SourceResolver(provider_name="moviebox").resolve(
+                title=self.selected_item.title,
+                subject_type=self.selected_item.subjectType,
+                year=self.selected_item.year,
+                season=season,
+                episode=episode,
+                imdb_id=self.selected_item.imdbId,
+                tmdb_id=self.selected_item.tmdbId,
+            )
+        except Exception:
+            return candidates
+
+        ranked_moviebox_streams = self._rank_stream_candidates(
+            moviebox_streams,
+            preferred_source=str(getattr(selected_stream, "source", "") or ""),
+            preferred_quality=getattr(selected_stream, "quality", None),
+            preferred_audio=self._stream_audio_label(selected_stream),
+            preferred_url=str(getattr(selected_stream, "url", "") or ""),
+        )
+
+        for stream in ranked_moviebox_streams:
+            stream_url = str(getattr(stream, "url", "") or "").strip()
+            if not stream_url or stream_url in seen_urls:
+                continue
+            candidates.append(stream)
+            seen_urls.add(stream_url)
+
+        return candidates
+
+    @staticmethod
+    def _dedupe_urls(urls: list[str]) -> list[str]:
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for url in urls:
+            cleaned = str(url).strip()
+            if not cleaned or cleaned in seen:
+                continue
+            deduped.append(cleaned)
+            seen.add(cleaned)
+        return deduped
+
+    def _build_android_subtitle_attempts(self, stream) -> list[list[str]]:
+        selected_urls = self._dedupe_urls(
+            [subtitle.url for subtitle in self.selected_subtitles if subtitle.url]
+        )
+
+        preferred_language = self.preferred_subtitle_language_id
+        if not preferred_language and self.selected_subtitles:
+            preferred_language = self.selected_subtitles[0].language_id
+
+        provider_subtitles = []
+        provider_subtitles.extend(getattr(stream, "subtitles", []))
+        provider_subtitles.extend(self.resolved_subtitles)
+
+        ranked_provider_urls: list[tuple[int, int, str]] = []
+        for index, subtitle in enumerate(provider_subtitles):
+            subtitle_url = str(getattr(subtitle, "url", "") or "").strip()
+            if not subtitle_url or subtitle_url in selected_urls:
+                continue
+
+            language_id = normalize_language_id(getattr(subtitle, "language", None))
+            score = 1
+            if preferred_language and language_id == preferred_language:
+                score = 0
+            ranked_provider_urls.append((score, index, subtitle_url))
+
+        ranked_provider_urls.sort(key=lambda item: (item[0], item[1]))
+        provider_urls = self._dedupe_urls([url for _, _, url in ranked_provider_urls])
+
+        attempts: list[list[str]] = []
+        if selected_urls:
+            attempts.append(selected_urls)
+        if provider_urls:
+            attempts.append(provider_urls)
+        attempts.append([])
+        return attempts
 
     async def _confirm_continue_next_episode(
         self,

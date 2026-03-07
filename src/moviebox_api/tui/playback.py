@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import atexit
 import os
+import re
 import shutil
 import subprocess
+import threading
+import time
 import webbrowser
 from dataclasses import dataclass
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
+
+import httpx
 
 AUTO_TARGET = "auto"
 
@@ -54,6 +61,15 @@ _ANDROID_TARGET_PACKAGES = {
     ANDROID_MX_FREE_TARGET: ["com.mxtech.videoplayer.ad"],
 }
 
+_PROXY_ROUTE_TTL_SECONDS = 20 * 60
+_PROXY_LOCK = threading.Lock()
+_PROXY_SERVER: ThreadingHTTPServer | None = None
+_PROXY_THREAD: threading.Thread | None = None
+_PROXY_HTTP_CLIENT: httpx.Client | None = None
+_PROXY_ROUTES: dict[str, _ProxyRoute] = {}
+
+_M3U8_URI_PATTERN = re.compile(r'URI="([^"]+)"')
+
 
 @dataclass(frozen=True, slots=True)
 class PlaybackTarget:
@@ -69,6 +85,13 @@ class PlaybackResult:
     success: bool
     message: str
     target_id: str
+
+
+@dataclass(slots=True)
+class _ProxyRoute:
+    url: str
+    headers: dict[str, str]
+    created_at: float
 
 
 def is_termux_environment() -> bool:
@@ -266,6 +289,236 @@ def resolve_playback_attempt_order(target_id: str | None) -> list[str]:
     return [target_id for target_id in preferred_order if target_id in available]
 
 
+def _ensure_proxy_http_client() -> httpx.Client:
+    global _PROXY_HTTP_CLIENT
+    if _PROXY_HTTP_CLIENT is None:
+        _PROXY_HTTP_CLIENT = httpx.Client(
+            timeout=httpx.Timeout(20.0, read=300.0),
+            follow_redirects=True,
+        )
+    return _PROXY_HTTP_CLIENT
+
+
+def _close_proxy_http_client() -> None:
+    global _PROXY_HTTP_CLIENT
+    if _PROXY_HTTP_CLIENT is not None:
+        _PROXY_HTTP_CLIENT.close()
+        _PROXY_HTTP_CLIENT = None
+
+
+def _cleanup_proxy_routes(now: float | None = None) -> None:
+    current = now if now is not None else time.time()
+    expiry = current - _PROXY_ROUTE_TTL_SECONDS
+    stale_tokens = [token for token, route in _PROXY_ROUTES.items() if route.created_at < expiry]
+    for token in stale_tokens:
+        _PROXY_ROUTES.pop(token, None)
+
+
+def _register_proxy_route(url: str, headers: dict[str, str]) -> str:
+    server_port = _ensure_proxy_server()
+    token = os.urandom(12).hex()
+    cleaned_headers = {
+        str(key).strip(): str(value).strip()
+        for key, value in headers.items()
+        if str(key).strip() and str(value).strip()
+    }
+
+    with _PROXY_LOCK:
+        _cleanup_proxy_routes()
+        _PROXY_ROUTES[token] = _ProxyRoute(url=url, headers=cleaned_headers, created_at=time.time())
+
+    return f"http://127.0.0.1:{server_port}/route/{token}"
+
+
+def _resolve_proxy_route(token: str) -> _ProxyRoute | None:
+    with _PROXY_LOCK:
+        route = _PROXY_ROUTES.get(token)
+        if route is None:
+            return None
+        return route
+
+
+def _is_m3u8_response(url: str, content_type: str | None) -> bool:
+    if ".m3u8" in url.lower():
+        return True
+    lowered = (content_type or "").lower()
+    return "mpegurl" in lowered or "vnd.apple.mpegurl" in lowered
+
+
+def _rewrite_m3u8_playlist(text: str, *, base_url: str, headers: dict[str, str]) -> str:
+    rewritten_lines: list[str] = []
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            rewritten_lines.append(line)
+            continue
+
+        if stripped.startswith("#"):
+            if 'URI="' in line:
+
+                def _replace_uri(match: re.Match[str]) -> str:
+                    nested_url = urljoin(base_url, match.group(1))
+                    proxied = _register_proxy_route(nested_url, headers)
+                    return f'URI="{proxied}"'
+
+                rewritten_lines.append(_M3U8_URI_PATTERN.sub(_replace_uri, line))
+                continue
+
+            rewritten_lines.append(line)
+            continue
+
+        nested_url = urljoin(base_url, stripped)
+        proxied_url = _register_proxy_route(nested_url, headers)
+        rewritten_lines.append(proxied_url)
+
+    return "\n".join(rewritten_lines)
+
+
+class _PlaybackProxyRequestHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, format: str, *args) -> None:
+        return
+
+    def do_HEAD(self) -> None:
+        self._handle_proxy_request(send_body=False)
+
+    def do_GET(self) -> None:
+        self._handle_proxy_request(send_body=True)
+
+    def _handle_proxy_request(self, *, send_body: bool) -> None:
+        path = self.path.split("?", 1)[0]
+        if not path.startswith("/route/"):
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        token = path.rsplit("/", 1)[-1].strip()
+        route = _resolve_proxy_route(token)
+        if route is None:
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        request_headers = dict(route.headers)
+        range_header = self.headers.get("Range")
+        if range_header:
+            request_headers["Range"] = range_header
+
+        client = _ensure_proxy_http_client()
+        try:
+            method = "GET" if send_body else "HEAD"
+            with client.stream(method, route.url, headers=request_headers) as response:
+                is_playlist = _is_m3u8_response(route.url, response.headers.get("Content-Type"))
+                if send_body and is_playlist:
+                    playlist_text = response.text
+                    rewritten = _rewrite_m3u8_playlist(
+                        playlist_text,
+                        base_url=str(response.url),
+                        headers=route.headers,
+                    )
+                    payload = rewritten.encode("utf-8")
+
+                    self.send_response(response.status_code)
+                    self.send_header("Content-Type", "application/vnd.apple.mpegurl")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
+
+                self.send_response(response.status_code)
+                passthrough = [
+                    "Content-Type",
+                    "Content-Length",
+                    "Content-Range",
+                    "Accept-Ranges",
+                    "Last-Modified",
+                    "ETag",
+                ]
+                for header_name in passthrough:
+                    header_value = response.headers.get(header_name)
+                    if header_value:
+                        self.send_header(header_name, header_value)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+
+                if not send_body:
+                    return
+
+                for chunk in response.iter_bytes(chunk_size=64 * 1024):
+                    self.wfile.write(chunk)
+        except Exception:
+            self.send_response(502)
+            self.end_headers()
+
+
+def _shutdown_proxy_server() -> None:
+    global _PROXY_SERVER, _PROXY_THREAD
+    server = _PROXY_SERVER
+    if server is not None:
+        server.shutdown()
+        server.server_close()
+    _PROXY_SERVER = None
+    _PROXY_THREAD = None
+
+
+def _ensure_proxy_server() -> int:
+    global _PROXY_SERVER, _PROXY_THREAD
+    with _PROXY_LOCK:
+        if _PROXY_SERVER is not None:
+            return _PROXY_SERVER.server_port
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _PlaybackProxyRequestHandler)
+        server.daemon_threads = True
+
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        _PROXY_SERVER = server
+        _PROXY_THREAD = thread
+        return server.server_port
+
+
+atexit.register(_shutdown_proxy_server)
+atexit.register(_close_proxy_http_client)
+
+
+def _prepare_android_proxy_urls(
+    stream_url: str,
+    headers: dict[str, str],
+    subtitle_urls: list[str],
+) -> tuple[str, list[str]]:
+    try:
+        proxied_stream = _register_proxy_route(stream_url, headers)
+        proxied_subtitles = [_register_proxy_route(url, headers) for url in subtitle_urls if url]
+        return proxied_stream, proxied_subtitles
+    except Exception:
+        return stream_url, [url for url in subtitle_urls if url]
+
+
+def probe_stream_access(stream_url: str, headers: dict[str, str]) -> tuple[bool, str]:
+    """Probe a stream URL quickly to determine whether it is reachable."""
+
+    probe_headers = {
+        str(key).strip(): str(value).strip()
+        for key, value in headers.items()
+        if str(key).strip() and str(value).strip()
+    }
+    probe_headers["Range"] = "bytes=0-1"
+
+    try:
+        with httpx.Client(timeout=httpx.Timeout(10.0, read=10.0), follow_redirects=True) as client:
+            response = client.get(stream_url, headers=probe_headers)
+        if response.status_code in {200, 206}:
+            return True, "ok"
+        return False, f"HTTP {response.status_code}"
+    except Exception as exc:
+        return False, str(exc)
+
+
 def _android_header_array(headers: dict[str, str]) -> str | None:
     pairs: list[str] = []
     for key, value in headers.items():
@@ -279,37 +532,43 @@ def _android_header_array(headers: dict[str, str]) -> str | None:
     return ",".join(pairs)
 
 
+def _android_header_fields_string(headers: dict[str, str]) -> str | None:
+    parts: list[str] = []
+    for key, value in headers.items():
+        key_text = str(key).strip()
+        value_text = str(value).strip()
+        if key_text and value_text:
+            parts.append(f"{key_text}: {value_text}")
+    if not parts:
+        return None
+    return ",".join(parts)
+
+
 def _with_title_extra(command: list[str], media_title: str | None) -> list[str]:
     if not media_title:
         return command
     return [*command, "--es", "title", media_title]
 
 
-def _with_subtitle_extras(command: list[str], subtitle_urls: list[str]) -> list[str]:
+def _with_subtitle_extras(command: list[str], subtitle_urls: list[str], target_id: str) -> list[str]:
     if not subtitle_urls:
         return command
 
     primary = subtitle_urls[0]
     subtitle_name = Path(urlparse(primary).path).name or "subtitle.srt"
 
-    return [
-        *command,
-        "--es",
-        "subs",
-        primary,
-        "--es",
-        "subs.name",
-        subtitle_name,
-        "--es",
-        "subtitles_location",
-        primary,
-        "--eu",
-        "subs",
-        primary,
-        "--eu",
-        "subs.enable",
-        primary,
-    ]
+    extras: list[str] = []
+    if target_id in {ANDROID_MPV_TARGET, ANDROID_MPVEX_TARGET}:
+        extras.extend(["--eu", "subs", primary, "--eu", "subs.enable", primary])
+        extras.extend(["--es", "subtitles_location", primary])
+    elif target_id in {ANDROID_MX_PRO_TARGET, ANDROID_MX_FREE_TARGET}:
+        extras.extend(["--eu", "subs", primary, "--eu", "subs.enable", primary])
+        extras.extend(["--es", "subs.name", subtitle_name, "--es", "subs.filename", subtitle_name])
+        extras.extend(["--es", "subtitles_location", primary])
+    elif target_id == ANDROID_VLC_TARGET:
+        extras.extend(["--es", "subtitles_location", primary, "--eu", "subs", primary])
+
+    return [*command, *extras]
 
 
 def _build_android_intent_commands(
@@ -322,7 +581,6 @@ def _build_android_intent_commands(
     base = ["am", "start", "-a", "android.intent.action.VIEW"]
 
     commands: list[list[str]] = []
-
     if target_id in {ANDROID_MPV_TARGET, ANDROID_MPVEX_TARGET}:
         package = _target_package_candidates(target_id)[0]
         variants = [
@@ -332,6 +590,10 @@ def _build_android_intent_commands(
             [*base, "-t", "video/*", "-p", package, "-d", stream_url],
         ]
         commands = [_with_title_extra(variant, media_title) for variant in variants]
+
+        header_fields = _android_header_fields_string(headers)
+        if header_fields:
+            commands = [[*command, "--es", "http-header-fields", header_fields] for command in commands]
 
     elif target_id == ANDROID_VLC_TARGET:
         package = _target_package_candidates(target_id)[0]
@@ -385,8 +647,8 @@ def _build_android_intent_commands(
             commands = [[*command, "--esa", "headers", header_array] for command in commands]
 
     if subtitle_urls:
-        with_subs = [_with_subtitle_extras(command, subtitle_urls) for command in commands]
-        return [*with_subs, *commands]
+        with_subtitles = [_with_subtitle_extras(command, subtitle_urls, target_id) for command in commands]
+        return [*with_subtitles, *commands]
 
     return commands
 
@@ -502,14 +764,30 @@ def play_stream(
 
     for resolved_target in attempt_order:
         if resolved_target in _ANDROID_TARGET_IDS:
-            result = _launch_android_target(
-                target_id=resolved_target,
-                stream_url=stream_url,
-                headers=headers,
-                subtitle_urls=subtitle_urls,
-                media_title=media_title,
+            proxied_stream, proxied_subtitles = _prepare_android_proxy_urls(
+                stream_url, headers, subtitle_urls
             )
-        elif resolved_target == CLI_MPV_TARGET:
+            android_attempts: list[tuple[str, list[str], bool]] = [(proxied_stream, proxied_subtitles, True)]
+
+            if proxied_stream != stream_url or proxied_subtitles != subtitle_urls:
+                android_attempts.append((stream_url, subtitle_urls, False))
+
+            for media_url, subtitles, proxied in android_attempts:
+                result = _launch_android_target(
+                    target_id=resolved_target,
+                    stream_url=media_url,
+                    headers=headers,
+                    subtitle_urls=subtitles,
+                    media_title=media_title,
+                )
+                if result.success:
+                    suffix = " via local proxy" if proxied else ""
+                    return PlaybackResult(True, f"{result.message}{suffix}", resolved_target)
+                last_failure = result.message
+
+            continue
+
+        if resolved_target == CLI_MPV_TARGET:
             success = _run_mpv(stream_url, headers, subtitle_paths)
             result = PlaybackResult(
                 success=success,
@@ -533,7 +811,6 @@ def play_stream(
 
         if result.success:
             return result
-
         last_failure = result.message
 
     if is_termux_environment() and not allow_browser_fallback:

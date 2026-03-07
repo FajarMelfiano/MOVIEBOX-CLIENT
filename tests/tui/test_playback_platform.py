@@ -101,3 +101,38 @@ def test_play_stream_termux_blocks_browser_fallback(monkeypatch: pytest.MonkeyPa
 
     assert result.success is False
     assert opened_browser["called"] is False
+
+
+def test_play_stream_android_prefers_local_proxy_launch(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("TERMUX_VERSION", "0.119")
+    monkeypatch.setattr(
+        playback,
+        "resolve_playback_attempt_order",
+        lambda _target: [playback.ANDROID_MPV_TARGET],
+    )
+    monkeypatch.setattr(
+        playback,
+        "_prepare_android_proxy_urls",
+        lambda *_args, **_kwargs: ("http://127.0.0.1:9999/route/abc", ["http://127.0.0.1:9999/route/sub"]),
+    )
+
+    launched = {"url": ""}
+
+    def _fake_launch(target_id, stream_url, headers, subtitle_urls, media_title):
+        launched["url"] = stream_url
+        return playback.PlaybackResult(True, "Opened MPV Android", target_id)
+
+    monkeypatch.setattr(playback, "_launch_android_target", _fake_launch)
+
+    result = playback.play_stream(
+        "https://example.com/video.m3u8",
+        {"Referer": "https://example.com"},
+        [],
+        subtitle_urls=["https://example.com/sub.srt"],
+        target_id=playback.ANDROID_MPV_TARGET,
+        allow_browser_fallback=False,
+    )
+
+    assert result.success is True
+    assert "local proxy" in result.message
+    assert launched["url"].startswith("http://127.0.0.1")
