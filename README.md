@@ -19,7 +19,7 @@ Unofficial Python client for searching, streaming, and downloading movies or TV 
 
 ```bash
 git clone https://github.com/FajarMelfiano/MOVIEBOX-CLIENT
-cd moviebox-api
+cd MOVIEBOX-CLIENT
 chmod +x install.sh
 ./install.sh
 ```
