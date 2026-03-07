@@ -127,6 +127,18 @@ export MOVIEBOX_SUBDL_API_KEY="<your-key>"
 export MOVIEBOX_SUBSOURCE_API_KEY="<your-key>"
 ```
 
+### Supabase subtitle proxy mode (public, no login)
+
+If you want all users to use your shared SubDL/SubSource keys from server-side, configure a proxy endpoint:
+
+```bash
+export MOVIEBOX_SUBTITLE_PROXY_URL="https://<your-project>.supabase.co/functions/v1/subtitle-proxy"
+# Optional if your function expects bearer/apikey token
+export MOVIEBOX_SUBTITLE_PROXY_AUTH_TOKEN="<optional-token>"
+```
+
+When proxy URL is set, `subdl` and `subsource` requests are routed to that endpoint and do not require local user keys.
+
 ## Interactive TUI flow
 
 `moviebox interactive-tui` currently supports:

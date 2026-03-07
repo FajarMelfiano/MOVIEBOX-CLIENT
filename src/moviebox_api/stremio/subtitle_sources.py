@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -13,6 +14,8 @@ from moviebox_api.security.secrets import get_secret
 
 SUBDL_API_KEY_ENV = "MOVIEBOX_SUBDL_API_KEY"
 SUBSOURCE_API_KEY_ENV = "MOVIEBOX_SUBSOURCE_API_KEY"
+SUBTITLE_PROXY_URL_ENV = "MOVIEBOX_SUBTITLE_PROXY_URL"
+SUBTITLE_PROXY_AUTH_TOKEN_ENV = "MOVIEBOX_SUBTITLE_PROXY_AUTH_TOKEN"
 
 _OPEN_SUBTITLES_URL = "https://opensubtitles-v3.strem.io"
 _SUBDL_BASE_URL = "https://subdl.strem.top"
@@ -88,11 +91,121 @@ def _build_subsource_config_path(api_key: str, language_codes: list[str]) -> str
 
 def subtitle_source_is_configured(source_name: str) -> bool:
     lowered = source_name.strip().lower()
+    if lowered in {"subdl", "subsource"} and subtitle_proxy_is_configured():
+        return True
+
     if lowered == "subdl":
         return bool(get_secret(SUBDL_API_KEY_ENV, "").strip())
     if lowered == "subsource":
         return bool(get_secret(SUBSOURCE_API_KEY_ENV, "").strip())
     return True
+
+
+def subtitle_proxy_url() -> str:
+    return os.getenv(SUBTITLE_PROXY_URL_ENV, "").strip()
+
+
+def subtitle_proxy_is_configured() -> bool:
+    return bool(subtitle_proxy_url())
+
+
+def _subtitle_proxy_headers() -> dict[str, str]:
+    headers = dict(_DEFAULT_HEADERS)
+    token = os.getenv(SUBTITLE_PROXY_AUTH_TOKEN_ENV, "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+        headers["apikey"] = token
+    return headers
+
+
+def _map_proxy_subtitle_entry(entry: dict[str, Any]) -> ExternalSubtitle | None:
+    url = str(entry.get("url") or entry.get("link") or "").strip()
+    if not url.startswith(("http://", "https://")):
+        return None
+
+    language_raw = str(
+        entry.get("lang")
+        or entry.get("language")
+        or entry.get("language_id")
+        or entry.get("languageCode")
+        or ""
+    ).strip()
+    language_code = _normalise_language_code(language_raw)
+
+    subtitle_id = str(entry.get("id") or "").strip()
+    label = str(entry.get("label") or subtitle_id or language_code).strip()
+    source_name = str(entry.get("source") or "subtitle-proxy").strip().lower()
+    return ExternalSubtitle(url=url, language=language_code, label=label, source=source_name)
+
+
+async def _fetch_subtitle_proxy(
+    *,
+    video_id: str,
+    content_type: str,
+    sources: list[str],
+    preferred_languages: list[str] | None,
+) -> tuple[list[ExternalSubtitle], list[str]]:
+    proxy_url = subtitle_proxy_url()
+    if not proxy_url:
+        return [], []
+
+    payload = {
+        "video_id": video_id,
+        "content_type": content_type,
+        "sources": sources,
+        "preferred_languages": preferred_languages or [],
+    }
+
+    async with httpx.AsyncClient(
+        headers=_subtitle_proxy_headers(),
+        follow_redirects=True,
+        timeout=httpx.Timeout(30.0),
+    ) as client:
+        response = await client.post(proxy_url, json=payload)
+        response.raise_for_status()
+        body = response.json()
+
+    raw_subtitles: list[Any] = []
+    raw_errors: list[Any] = []
+
+    if isinstance(body, list):
+        raw_subtitles = list(body)
+    elif isinstance(body, dict):
+        raw_subtitles = body.get("subtitles")
+        if not isinstance(raw_subtitles, list):
+            raw_subtitles = body.get("results")
+        if not isinstance(raw_subtitles, list):
+            raw_subtitles = body.get("data")
+        if not isinstance(raw_subtitles, list):
+            raw_subtitles = []
+
+        raw_errors_candidate = body.get("errors")
+        if isinstance(raw_errors_candidate, list):
+            raw_errors = list(raw_errors_candidate)
+
+    subtitles: list[ExternalSubtitle] = []
+    for entry in raw_subtitles:
+        if not isinstance(entry, dict):
+            continue
+        mapped = _map_proxy_subtitle_entry(entry)
+        if mapped is not None:
+            subtitles.append(mapped)
+
+    errors: list[str] = []
+    for raw_error in raw_errors:
+        if isinstance(raw_error, str):
+            text = raw_error.strip()
+            if text:
+                errors.append(text)
+            continue
+
+        if isinstance(raw_error, dict):
+            source_name = str(raw_error.get("source") or "subtitle-proxy").strip().lower()
+            message = str(raw_error.get("message") or raw_error.get("error") or "unknown error").strip()
+            if message:
+                errors.append(f"{source_name}: {message}")
+
+    return subtitles, errors
 
 
 def _looks_like_error_entry(entry: dict[str, Any]) -> bool:
@@ -310,7 +423,35 @@ async def fetch_external_subtitles(
     seen_urls: set[str] = set()
     source_errors: list[str] = []
 
+    proxy_sources = [
+        source_name for source_name in requested_sources if source_name in {"subdl", "subsource"}
+    ]
+    use_proxy = subtitle_proxy_is_configured() and bool(proxy_sources)
+
+    if use_proxy:
+        try:
+            proxy_subtitles, proxy_errors = await _fetch_subtitle_proxy(
+                video_id=video_id,
+                content_type=valid_content_type,
+                sources=proxy_sources,
+                preferred_languages=preferred_languages,
+            )
+        except Exception as exc:
+            source_errors.append(f"subtitle-proxy: {exc}")
+            proxy_subtitles = []
+            proxy_errors = []
+
+        source_errors.extend(proxy_errors)
+        for subtitle in proxy_subtitles:
+            if subtitle.url in seen_urls:
+                continue
+            seen_urls.add(subtitle.url)
+            subtitles.append(subtitle)
+
     for source_name in requested_sources:
+        if use_proxy and source_name in {"subdl", "subsource"}:
+            continue
+
         try:
             if source_name == "opensubtitles":
                 fetched = await _fetch_opensubtitles(video_id, valid_content_type)

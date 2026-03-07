@@ -6,6 +6,7 @@ from moviebox_api.stremio.subtitle_sources import (
     _normalise_language_code,
     _preferred_language_codes,
     fetch_external_subtitles,
+    subtitle_source_is_configured,
 )
 
 
@@ -71,3 +72,55 @@ async def test_fetch_external_subtitles_ignores_one_source_error_if_others_succe
     )
     assert len(result) == 1
     assert result[0].source == "opensubtitles"
+
+
+def test_subtitle_source_is_configured_uses_proxy_without_local_keys(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("MOVIEBOX_SUBTITLE_PROXY_URL", "https://example.com/subtitle-proxy")
+    monkeypatch.setattr(subtitle_sources, "get_secret", lambda *_args, **_kwargs: "")
+
+    assert subtitle_source_is_configured("subdl") is True
+    assert subtitle_source_is_configured("subsource") is True
+
+
+@pytest.mark.asyncio
+async def test_fetch_external_subtitles_prefers_proxy_for_subdl_and_subsource(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("MOVIEBOX_SUBTITLE_PROXY_URL", "https://example.com/subtitle-proxy")
+
+    async def _proxy_fetch(*_args, **_kwargs):
+        return (
+            [
+                ExternalSubtitle(
+                    url="https://proxy.example/subdl.srt",
+                    language="en",
+                    label="Proxy SubDL",
+                    source="subdl",
+                ),
+                ExternalSubtitle(
+                    url="https://proxy.example/subsource.srt",
+                    language="en",
+                    label="Proxy SubSource",
+                    source="subsource",
+                ),
+            ],
+            [],
+        )
+
+    async def _should_not_call_local(*_args, **_kwargs):
+        raise AssertionError("Local subtitle source should not be called when proxy is configured")
+
+    monkeypatch.setattr(subtitle_sources, "_fetch_subtitle_proxy", _proxy_fetch)
+    monkeypatch.setattr(subtitle_sources, "_fetch_subdl", _should_not_call_local)
+    monkeypatch.setattr(subtitle_sources, "_fetch_subsource", _should_not_call_local)
+
+    result = await fetch_external_subtitles(
+        video_id="tt0816692",
+        content_type="movie",
+        sources=["subdl", "subsource"],
+        preferred_languages=["english"],
+    )
+    assert len(result) == 2
+    assert {item.source for item in result} == {"subdl", "subsource"}
