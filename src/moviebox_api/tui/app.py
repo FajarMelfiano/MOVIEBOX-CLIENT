@@ -1115,7 +1115,10 @@ class InteractiveTextualApp(App[None]):
                             last_failure = f"{stream.source}: {reason}"
                             continue
 
-                        subtitle_attempts = self._build_android_subtitle_attempts(stream)
+                        subtitle_attempts = self._build_android_subtitle_attempts(
+                            stream,
+                            target_id=selected_target,
+                        )
                         for subtitle_attempt_index, subtitle_urls in enumerate(subtitle_attempts, start=1):
                             self.query_one("#loading_label", Static).update(
                                 f"Launching player (stream {candidate_index}/{len(stream_candidates)})..."
@@ -1458,10 +1461,19 @@ class InteractiveTextualApp(App[None]):
 
         if source_choice == "all":
             selected = ["opensubtitles"]
+            missing: list[str] = []
             if subtitle_source_is_configured("subdl"):
                 selected.append("subdl")
+            else:
+                missing.append(SUBDL_API_KEY_ENV)
             if subtitle_source_is_configured("subsource"):
                 selected.append("subsource")
+
+            if missing:
+                missing_text = ", ".join(missing)
+                self._set_status(
+                    f"Using OpenSubtitles only for external sources. Missing secrets: {missing_text}"
+                )
             return selected
 
         return []
@@ -1746,7 +1758,7 @@ class InteractiveTextualApp(App[None]):
             seen.add(cleaned)
         return deduped
 
-    def _build_android_subtitle_attempts(self, stream) -> list[list[str]]:
+    def _build_android_subtitle_attempts(self, stream, *, target_id: str) -> list[list[str]]:
         selected_urls = self._dedupe_urls(
             [subtitle.url for subtitle in self.selected_subtitles if subtitle.url]
         )
@@ -1775,10 +1787,19 @@ class InteractiveTextualApp(App[None]):
         provider_urls = self._dedupe_urls([url for _, _, url in ranked_provider_urls])
 
         attempts: list[list[str]] = []
-        if selected_urls:
-            attempts.append(selected_urls)
-        if provider_urls:
-            attempts.append(provider_urls)
+
+        prefer_provider_first = target_id in {"android_vlc", "android_mx_pro", "android_mx_free"}
+        if prefer_provider_first:
+            if provider_urls:
+                attempts.append(provider_urls)
+            if selected_urls:
+                attempts.append(selected_urls)
+        else:
+            if selected_urls:
+                attempts.append(selected_urls)
+            if provider_urls:
+                attempts.append(provider_urls)
+
         attempts.append([])
         return attempts
 

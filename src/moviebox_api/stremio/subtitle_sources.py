@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from moviebox_api.language import normalize_language_id, to_iso639_1
+from moviebox_api.language import normalize_language_id
 from moviebox_api.security.secrets import get_secret
 
 SUBDL_API_KEY_ENV = "MOVIEBOX_SUBDL_API_KEY"
@@ -40,20 +40,12 @@ class ExternalSubtitle:
 
 
 def _normalise_language_code(language: str | None) -> str:
-    canonical = normalize_language_id(language)
-    if canonical == "unknown":
-        return "unknown"
-
-    iso639_1 = to_iso639_1(canonical)
-    if iso639_1:
-        return iso639_1
-
-    return canonical
+    return normalize_language_id(language)
 
 
 def _preferred_language_codes(preferred_languages: list[str] | None) -> list[str]:
     if not preferred_languages:
-        return ["en", "id"]
+        return ["eng", "ind"]
 
     values: list[str] = []
     for language in preferred_languages:
@@ -64,7 +56,7 @@ def _preferred_language_codes(preferred_languages: list[str] | None) -> list[str
             values.append(code)
 
     if not values:
-        return ["en", "id"]
+        return ["eng", "ind"]
 
     return values[:3]
 

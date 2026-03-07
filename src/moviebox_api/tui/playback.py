@@ -71,6 +71,23 @@ _PROXY_ROUTES: dict[str, _ProxyRoute] = {}
 _M3U8_URI_PATTERN = re.compile(r'URI="([^"]+)"')
 
 
+def _safe_filename_hint(filename: str, fallback: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", filename).strip("._")
+    if not cleaned:
+        cleaned = fallback
+    if len(cleaned) > 80:
+        cleaned = cleaned[:80]
+    return cleaned
+
+
+def _guess_filename_hint(url: str, fallback: str) -> str:
+    parsed = urlparse(url)
+    name = Path(parsed.path).name.strip()
+    if name:
+        return _safe_filename_hint(name, fallback)
+    return _safe_filename_hint(fallback, fallback)
+
+
 @dataclass(frozen=True, slots=True)
 class PlaybackTarget:
     id: str
@@ -314,7 +331,7 @@ def _cleanup_proxy_routes(now: float | None = None) -> None:
         _PROXY_ROUTES.pop(token, None)
 
 
-def _register_proxy_route(url: str, headers: dict[str, str]) -> str:
+def _register_proxy_route(url: str, headers: dict[str, str], *, filename_hint: str | None = None) -> str:
     server_port = _ensure_proxy_server()
     token = os.urandom(12).hex()
     cleaned_headers = {
@@ -327,7 +344,8 @@ def _register_proxy_route(url: str, headers: dict[str, str]) -> str:
         _cleanup_proxy_routes()
         _PROXY_ROUTES[token] = _ProxyRoute(url=url, headers=cleaned_headers, created_at=time.time())
 
-    return f"http://127.0.0.1:{server_port}/route/{token}"
+    hint = _safe_filename_hint(filename_hint or "media.bin", "media.bin")
+    return f"http://127.0.0.1:{server_port}/route/{token}/{hint}"
 
 
 def _resolve_proxy_route(token: str) -> _ProxyRoute | None:
@@ -359,7 +377,11 @@ def _rewrite_m3u8_playlist(text: str, *, base_url: str, headers: dict[str, str])
 
                 def _replace_uri(match: re.Match[str]) -> str:
                     nested_url = urljoin(base_url, match.group(1))
-                    proxied = _register_proxy_route(nested_url, headers)
+                    proxied = _register_proxy_route(
+                        nested_url,
+                        headers,
+                        filename_hint=_guess_filename_hint(nested_url, "segment.ts"),
+                    )
                     return f'URI="{proxied}"'
 
                 rewritten_lines.append(_M3U8_URI_PATTERN.sub(_replace_uri, line))
@@ -369,7 +391,11 @@ def _rewrite_m3u8_playlist(text: str, *, base_url: str, headers: dict[str, str])
             continue
 
         nested_url = urljoin(base_url, stripped)
-        proxied_url = _register_proxy_route(nested_url, headers)
+        proxied_url = _register_proxy_route(
+            nested_url,
+            headers,
+            filename_hint=_guess_filename_hint(nested_url, "segment.ts"),
+        )
         rewritten_lines.append(proxied_url)
 
     return "\n".join(rewritten_lines)
@@ -389,12 +415,18 @@ class _PlaybackProxyRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_proxy_request(self, *, send_body: bool) -> None:
         path = self.path.split("?", 1)[0]
-        if not path.startswith("/route/"):
+        parts = path.split("/")
+        if len(parts) < 3 or parts[1] != "route":
             self.send_response(404)
             self.end_headers()
             return
 
-        token = path.rsplit("/", 1)[-1].strip()
+        token = parts[2].strip()
+        if not token:
+            self.send_response(404)
+            self.end_headers()
+            return
+
         route = _resolve_proxy_route(token)
         if route is None:
             self.send_response(404)
@@ -492,8 +524,18 @@ def _prepare_android_proxy_urls(
     subtitle_urls: list[str],
 ) -> tuple[str, list[str]]:
     try:
-        proxied_stream = _register_proxy_route(stream_url, headers)
-        proxied_subtitles = [_register_proxy_route(url, headers) for url in subtitle_urls if url]
+        stream_hint = _guess_filename_hint(stream_url, "stream.m3u8")
+        proxied_stream = _register_proxy_route(stream_url, headers, filename_hint=stream_hint)
+
+        proxied_subtitles = [
+            _register_proxy_route(
+                url,
+                headers,
+                filename_hint=_guess_filename_hint(url, "subtitle.srt"),
+            )
+            for url in subtitle_urls
+            if url
+        ]
         return proxied_stream, proxied_subtitles
     except Exception:
         return stream_url, [url for url in subtitle_urls if url]

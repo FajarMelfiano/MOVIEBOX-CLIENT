@@ -273,8 +273,35 @@ async def test_android_subtitle_attempts_fallback_to_provider_language_priority(
             subtitles=[SimpleNamespace(url="https://provider.example/sub-ind.srt", language="Indonesian")]
         )
 
-        attempts = app._build_android_subtitle_attempts(stream)
+        attempts = app._build_android_subtitle_attempts(stream, target_id="android_mpv")
 
         assert attempts[0] == ["https://external.example/sub-ind.srt"]
         assert attempts[1][0] == "https://provider.example/sub-ind.srt"
+        assert attempts[-1] == []
+
+
+@pytest.mark.asyncio
+async def test_android_subtitle_attempts_vlc_prioritizes_provider_subtitles():
+    app = InteractiveTextualApp()
+
+    async with app.run_test() as _pilot:
+        app.preferred_subtitle_language_id = "ind"
+        app.selected_subtitles = [
+            SubtitleChoice(
+                url="https://external.example/sub-ind.srt",
+                language="Indonesian",
+                language_id="ind",
+                label="External Indonesian",
+                source="subdl",
+            )
+        ]
+        app.resolved_subtitles = [
+            SimpleNamespace(url="https://provider.example/sub-ind.srt", language="Indonesian")
+        ]
+        stream = SimpleNamespace(subtitles=[])
+
+        attempts = app._build_android_subtitle_attempts(stream, target_id="android_vlc")
+
+        assert attempts[0] == ["https://provider.example/sub-ind.srt"]
+        assert attempts[1] == ["https://external.example/sub-ind.srt"]
         assert attempts[-1] == []
