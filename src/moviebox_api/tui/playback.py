@@ -28,6 +28,7 @@ ANDROID_MX_FREE_TARGET = "android_mx_free"
 CLI_MPV_TARGET = "mpv_cli"
 CLI_VLC_TARGET = "vlc_cli"
 BROWSER_TARGET = "browser"
+WEB_PLAYER_TARGET = "web_player"
 
 _ANDROID_TARGET_IDS = {
     ANDROID_MPV_TARGET,
@@ -196,6 +197,7 @@ def list_playback_targets() -> list[PlaybackTarget]:
                     detected=detected,
                 )
             )
+        targets.append(PlaybackTarget(id=WEB_PLAYER_TARGET, label="Web Player", kind="browser"))
         return targets
 
     targets = [PlaybackTarget(id=AUTO_TARGET, label="Auto (Recommended)", kind="virtual")]
@@ -204,6 +206,7 @@ def list_playback_targets() -> list[PlaybackTarget]:
     if shutil.which("vlc"):
         targets.append(PlaybackTarget(id=CLI_VLC_TARGET, label="VLC (CLI)", kind="cli"))
     targets.append(PlaybackTarget(id=BROWSER_TARGET, label="System browser", kind="browser"))
+    targets.append(PlaybackTarget(id=WEB_PLAYER_TARGET, label="Web Player", kind="browser"))
     return targets
 
 
@@ -222,6 +225,7 @@ def _normalize_target_alias(target_id: str | None) -> str:
         CLI_MPV_TARGET,
         CLI_VLC_TARGET,
         BROWSER_TARGET,
+        WEB_PLAYER_TARGET,
     }
     if raw in known_targets:
         return raw
@@ -245,6 +249,9 @@ def _normalize_target_alias(target_id: str | None) -> str:
         "mpv-cli": CLI_MPV_TARGET,
         "desktop": CLI_MPV_TARGET,
         "cli-mpv": CLI_MPV_TARGET,
+        "web": WEB_PLAYER_TARGET,
+        "web-player": WEB_PLAYER_TARGET,
+        "web_player": WEB_PLAYER_TARGET,
     }
     return alias_map.get(raw, raw)
 
@@ -302,7 +309,7 @@ def resolve_playback_attempt_order(target_id: str | None) -> list[str]:
     if normalized in available:
         return [normalized]
 
-    preferred_order = [CLI_MPV_TARGET, CLI_VLC_TARGET, BROWSER_TARGET]
+    preferred_order = [CLI_MPV_TARGET, CLI_VLC_TARGET, WEB_PLAYER_TARGET, BROWSER_TARGET]
     return [target_id for target_id in preferred_order if target_id in available]
 
 
@@ -416,6 +423,176 @@ class _PlaybackProxyRequestHandler(BaseHTTPRequestHandler):
     def _handle_proxy_request(self, *, send_body: bool) -> None:
         path = self.path.split("?", 1)[0]
         parts = path.split("/")
+        
+        if len(parts) >= 2 and parts[1] == "player":
+            from urllib.parse import parse_qs
+            query_string = self.path.split("?", 1)[1] if "?" in self.path else ""
+            params = parse_qs(query_string)
+            video_url = params.get("video", [""])[0]
+            subs_urls = params.get("sub", [])
+            
+            html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MOVIEBOX</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&display=swap" rel="stylesheet">
+    <style>
+        :root {{
+            --primary: #6366f1;
+            --bg: #030712;
+            --text: #f9fafb;
+        }}
+        body, html {{ 
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            background-color: var(--bg); color: var(--text);
+            font-family: 'Inter', system-ui, sans-serif;
+            overflow: hidden;
+        }}
+        .player-wrapper {{
+            position: relative;
+            width: 100%; height: 100%;
+            display: flex; justify-content: center; align-items: center;
+        }}
+        video {{
+            width: 100%; height: 100%;
+            outline: none; background: #000;
+        }}
+        video::-webkit-media-controls-buffering-overlay {{
+            display: none !important;
+        }}
+        .header {{
+            position: absolute; top: 0; left: 0; right: 0;
+            padding: 2rem;
+            background: linear-gradient(to bottom, rgba(0,0,0,0.8) 0%, rgba(0,0,0,0) 100%);
+            display: flex; justify-content: space-between; align-items: center;
+            z-index: 10;
+            transition: opacity 0.4s ease;
+            opacity: 1;
+        }}
+        .header.idle {{ opacity: 0; pointer-events: none; }}
+        .title-container {{ display: flex; align-items: center; gap: 14px; }}
+        .logo {{ 
+            font-weight: 800; font-size: 20px; letter-spacing: 1px;
+            background: linear-gradient(to right, #818cf8, #c084fc);
+            -webkit-background-clip: text; color: transparent;
+        }}
+        .divider {{ width: 5px; height: 5px; border-radius: 50%; background: #4b5563; }}
+        .now-playing {{ font-weight: 500; font-size: 15px; color: #d1d5db; letter-spacing: 0.5px; }}
+        
+        .loading {{
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            width: 48px; height: 48px;
+            border: 3px solid rgba(255,255,255,0.1);
+            border-radius: 50%;
+            border-top-color: var(--primary);
+            animation: spin 1s ease-in-out infinite;
+            z-index: 5;
+            display: none;
+            pointer-events: none;
+        }}
+        @keyframes spin {{ to {{ transform: translate(-50%, -50%) rotate(360deg); }} }}
+        video.waiting ~ .loading {{ display: block; }}
+    </style>
+</head>
+<body>
+    <div class="player-wrapper" id="wrapper">
+        <div class="header" id="header">
+            <div class="title-container">
+                <div class="logo">MOVIEBOX</div>
+                <div class="divider"></div>
+                <div class="now-playing">Playing External Stream</div>
+            </div>
+        </div>
+        <video id="video-player" controls autoplay playsinline crossorigin="anonymous">
+"""
+            for i, sub in enumerate(subs_urls):
+                default = "default" if i == 0 else ""
+                html += f'            <track label="Subtitle {i+1}" kind="subtitles" srclang="en" src="{sub}" {default}>\n'
+            
+            html += f"""        </video>
+        <div class="loading"></div>
+    </div>
+    <script>
+        const video = document.getElementById('video-player');
+        const header = document.getElementById('header');
+        const wrapper = document.getElementById('wrapper');
+        const videoSrc = "{video_url}";
+        
+        if (Hls.isSupported() && videoSrc.includes('.m3u8')) {{
+            const hls = new Hls({{ maxBufferLength: 30, maxMaxBufferLength: 600 }});
+            hls.loadSource(videoSrc); 
+            hls.attachMedia(video);
+            hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {{}}));
+            hls.on(Hls.Events.ERROR, (evt, data) => {{
+                if(data.fatal) {{
+                    switch(data.type) {{
+                        case Hls.ErrorTypes.NETWORK_ERROR: hls.startLoad(); break;
+                        case Hls.ErrorTypes.MEDIA_ERROR: hls.recoverMediaError(); break;
+                        default: hls.destroy(); break;
+                    }}
+                }}
+            }});
+        }} else if (video.canPlayType('application/vnd.apple.mpegurl')) {{
+            video.src = videoSrc; 
+            video.addEventListener('loadedmetadata', () => video.play().catch(() => {{}}));
+        }} else {{ 
+            video.src = videoSrc; 
+        }}
+
+        let idleTimeout;
+        const resetIdle = () => {{
+            header.classList.remove('idle');
+            clearTimeout(idleTimeout);
+            idleTimeout = setTimeout(() => {{
+                if(!video.paused) header.classList.add('idle');
+            }}, 2800);
+        }};
+        
+        document.addEventListener('mousemove', resetIdle);
+        document.addEventListener('keydown', resetIdle);
+        video.addEventListener('play', resetIdle);
+        video.addEventListener('pause', () => header.classList.remove('idle'));
+
+        document.addEventListener('keydown', (e) => {{
+            const focused = document.activeElement;
+            if (focused && focused.tagName === 'VIDEO') return;
+            
+            if (e.code === 'Space' || e.code === 'KeyK') {{ e.preventDefault(); video.paused ? video.play() : video.pause(); }}
+            if (e.code === 'KeyF') {{ 
+                if (!document.fullscreenElement) wrapper.requestFullscreen().catch(() => {{}});
+                else document.exitFullscreen();
+            }}
+            if (e.code === 'KeyM') {{ video.muted = !video.muted; }}
+            if (e.code === 'ArrowRight') {{ video.currentTime += 10; }}
+            if (e.code === 'ArrowLeft') {{ video.currentTime -= 10; }}
+        }});
+
+        video.addEventListener('dblclick', (e) => {{
+            e.preventDefault();
+            if (!document.fullscreenElement) wrapper.requestFullscreen().catch(() => {{}});
+            else document.exitFullscreen();
+        }});
+
+        video.addEventListener('waiting', () => video.classList.add('waiting'));
+        video.addEventListener('playing', () => video.classList.remove('waiting'));
+        video.addEventListener('canplay', () => video.classList.remove('waiting'));
+        
+        resetIdle();
+    </script>
+</body>
+</html>"""
+            payload = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            if send_body:
+                self.wfile.write(payload)
+            return
+
         if len(parts) < 3 or parts[1] != "route":
             self.send_response(404)
             self.end_headers()
@@ -734,6 +911,8 @@ def _launch_android_target(
 
 
 def _open_url_fallback(url: str) -> bool:
+    with open("proxy_debug.log", "a") as f:
+        f.write(f"OPENING URL: {url}\n")
     if webbrowser.open(url, new=2):
         return True
     if shutil.which("xdg-open"):
@@ -841,6 +1020,22 @@ def play_stream(
             result = PlaybackResult(
                 success=success,
                 message="Launched VLC" if success else "VLC failed",
+                target_id=resolved_target,
+            )
+        elif resolved_target == WEB_PLAYER_TARGET:
+            from urllib.parse import urlencode
+            proxied_stream, proxied_subtitles = _prepare_android_proxy_urls(
+                stream_url, headers, subtitle_urls
+            )
+            query = {"video": proxied_stream}
+            if proxied_subtitles:
+                query["sub"] = proxied_subtitles
+            port = _ensure_proxy_server()
+            player_url = f"http://127.0.0.1:{port}/player?{urlencode(query, doseq=True)}"
+            opened = _open_url_fallback(player_url)
+            result = PlaybackResult(
+                success=opened,
+                message="Opened Web Player" if opened else "Failed to open Web Player",
                 target_id=resolved_target,
             )
         else:

@@ -1098,7 +1098,7 @@ class InteractiveTextualApp(App[None]):
         selected_stream = self.selected_stream
         selected_target = self._selected_player_target_id()
         stream_candidates = await self._collect_playback_stream_candidates(selected_stream)
-        allow_browser_fallback = not is_termux_environment()
+        allow_browser_fallback = True
         media_title = self.selected_item.title if self.selected_item else ""
         last_failure = "all stream and player attempts failed"
 

@@ -2,9 +2,7 @@
 
 import typing as t
 from datetime import date
-
-from pydantic import BaseModel, Field, HttpUrl, field_validator
-
+from moviebox_api.pydantic_compat import BaseModel, Field, HttpUrl, field_validator
 from moviebox_api.constants import SubjectType
 from moviebox_api.helpers import get_absolute_url
 from moviebox_api.models import (

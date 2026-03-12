@@ -15,7 +15,7 @@ from typing import cast
 from urllib.parse import urlparse
 
 import httpx
-from pydantic import HttpUrl
+from moviebox_api.pydantic_compat import HttpUrl
 from rich import box
 from rich.console import Console
 from rich.panel import Panel
@@ -45,6 +45,7 @@ from moviebox_api.stremio.subtitle_sources import (
     fetch_external_subtitles,
     subtitle_source_is_configured,
 )
+from moviebox_api.tui.playback import play_stream, WEB_PLAYER_TARGET
 
 console = Console()
 
@@ -485,6 +486,16 @@ class MovieBoxTUI:
                     continue
                 subtitle_paths.append(subtitle_path)
 
+        if player == WEB_PLAYER_TARGET:
+            subtitle_urls = [s.url for s in subtitles]
+            play_stream(
+                stream_url,
+                merged_headers,
+                subtitle_urls=subtitle_urls,
+                target_id=WEB_PLAYER_TARGET,
+            )
+            return
+
         try:
             command: list[str]
             if player == "mpv":
@@ -520,9 +531,18 @@ class MovieBoxTUI:
         headers: dict[str, str],
         subtitles: list[_SubtitleChoice],
     ) -> None:
-        if not shutil.which("mpv"):
-            console.print("[yellow]mpv not found, opening URL in browser...[/yellow]")
-            self._open_in_browser(stream_url)
+        player = self._choose_player(force_mpv=False)
+
+        if player == WEB_PLAYER_TARGET or (player == "mpv" and not shutil.which("mpv")):
+            if player == "mpv":
+                console.print("[yellow]mpv not found, using web player...[/yellow]")
+            subtitle_urls = [s.url for s in subtitles]
+            play_stream(
+                stream_url,
+                headers,
+                subtitle_urls=subtitle_urls,
+                target_id=WEB_PLAYER_TARGET,
+            )
             return
 
         subtitle_paths: list[str] = []
@@ -567,10 +587,16 @@ class MovieBoxTUI:
             if ytdl_result.returncode == 0:
                 return
 
-            console.print("[yellow]mpv could not load this URL. Opening browser fallback...[/yellow]")
+            console.print("[yellow]mpv could not load this URL. Opening web player fallback...[/yellow]")
             if not shutil.which("yt-dlp"):
-                console.print("[yellow]Tip: install yt-dlp to improve fallback support.[/yellow]")
-            self._open_in_browser(stream_url)
+                console.print("[yellow]Tip: install yt-dlp to improve mpv compatibility.[/yellow]")
+            subtitle_urls = [s.url for s in subtitles]
+            play_stream(
+                stream_url,
+                headers,
+                subtitle_urls=subtitle_urls,
+                target_id=WEB_PLAYER_TARGET,
+            )
         finally:
             if temp_dir is not None:
                 temp_dir.cleanup()
@@ -586,11 +612,12 @@ class MovieBoxTUI:
 
     def _choose_player(self, *, force_mpv: bool = False) -> str:
         available_players = [name for name in ("mpv", "vlc") if shutil.which(name)]
-        if not available_players:
-            raise RuntimeError("No supported player found. Install mpv or vlc.")
+        available_players.append(WEB_PLAYER_TARGET)
+        
         if force_mpv and "mpv" in available_players:
             console.print("[green]Using mpv so you can switch subtitle tracks in-player.[/green]")
             return "mpv"
+
         if len(available_players) == 1:
             return available_players[0]
 

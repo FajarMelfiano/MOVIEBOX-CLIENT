@@ -7,7 +7,7 @@ import subprocess
 
 import click
 from httpx import ConnectTimeout, HTTPStatusError
-from pydantic import ValidationError
+from moviebox_api.pydantic_compat import ValidationError
 from throttlebuster import DownloadedFile, DownloadMode
 
 from moviebox_api import __repo__, logger

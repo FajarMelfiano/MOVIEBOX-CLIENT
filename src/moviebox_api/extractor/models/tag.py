@@ -1,7 +1,5 @@
 """Models for item details extracted from html tags"""
-
-from pydantic import BaseModel, HttpUrl, field_validator
-
+from moviebox_api.pydantic_compat import BaseModel, HttpUrl, field_validator
 from moviebox_api.helpers import get_absolute_url
 
 

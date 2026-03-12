@@ -6,9 +6,7 @@ from dataclasses import dataclass
 from datetime import date
 from json import loads
 from uuid import UUID
-
-from pydantic import BaseModel, Field, HttpUrl, field_validator
-
+from moviebox_api.pydantic_compat import BaseModel, Field, HttpUrl, field_validator
 from moviebox_api.constants import ITEM_DETAILS_PATH, DownloadQualitiesType, SubjectType
 from moviebox_api.exceptions import ZeroMediaFileError
 from moviebox_api.helpers import get_file_extension
