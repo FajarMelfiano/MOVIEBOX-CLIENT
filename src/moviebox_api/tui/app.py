@@ -50,6 +50,7 @@ from moviebox_api.stremio.subtitle_sources import (
 )
 from moviebox_api.tui.playback import (
     AUTO_TARGET,
+    WEB_PLAYER_TARGET,
     default_playback_target_id,
     is_android_target,
     is_termux_environment,
@@ -298,6 +299,7 @@ class InteractiveTextualApp(App[None]):
         self.subtitles_by_language: dict[str, list[SubtitleChoice]] = {}
         self.subtitle_language_order: list[str] = []
         self.selected_subtitles: list[SubtitleChoice] = []
+        self.selected_subtitle_track: SubtitleChoice | None = None
         self.preferred_subtitle_language_id: str | None = None
 
     def compose(self) -> ComposeResult:
@@ -601,6 +603,9 @@ class InteractiveTextualApp(App[None]):
             return
         if table_id == "subtitle_languages_table":
             self._handle_subtitle_language_selected(event.cursor_row)
+            return
+        if table_id == "subtitle_tracks_table":
+            self._handle_subtitle_track_selected(event.cursor_row)
 
     async def _load_trending(self) -> None:
         self._set_loading(True, "Loading trending movies...")
@@ -879,6 +884,7 @@ class InteractiveTextualApp(App[None]):
 
         self.selected_stream = self.resolved_streams[row_index]
         self.selected_subtitles = []
+        self.selected_subtitle_track = None
         self.subtitles_by_language = {}
         self.subtitle_language_order = []
         self._clear_subtitle_tables()
@@ -993,10 +999,21 @@ class InteractiveTextualApp(App[None]):
         selected = self.subtitles_by_language.get(language_id, [])
         self.preferred_subtitle_language_id = language_id
         self.selected_subtitles = selected
+        self.selected_subtitle_track = None  # reset specific track when language group changes
         self._fill_subtitle_tracks_table(selected)
         self._update_run_summary()
         display_name = language_display_name(language_id)
         self._set_status(f"Using {len(selected)} subtitles for '{display_name}'.")
+
+    def _handle_subtitle_track_selected(self, row_index: int) -> None:
+        if row_index < 0 or row_index >= len(self.selected_subtitles):
+            return
+        track = self.selected_subtitles[row_index]
+        self.selected_subtitle_track = track
+        display_name = language_display_name(track.language_id)
+        self._set_status(
+            f"Selected subtitle track: {track.label!r} ({display_name}, {track.source})."
+        )
 
     async def _handle_execute(self) -> None:
         action = str(self.query_one("#action_select", Select).value or "stream")
@@ -1170,7 +1187,16 @@ class InteractiveTextualApp(App[None]):
                             headers,
                         )
 
-                    subtitle_urls = [subtitle.url for subtitle in self.selected_subtitles if subtitle.url]
+                    if selected_target == WEB_PLAYER_TARGET:
+                        # Web Player uses a single subtitle — prefer the explicitly selected track.
+                        if self.selected_subtitle_track is not None and self.selected_subtitle_track.url:
+                            subtitle_urls = [self.selected_subtitle_track.url]
+                        elif self.selected_subtitles:
+                            subtitle_urls = [self.selected_subtitles[0].url]
+                        else:
+                            subtitle_urls = []
+                    else:
+                        subtitle_urls = [subtitle.url for subtitle in self.selected_subtitles if subtitle.url]
                     self.query_one("#loading_label", Static).update(
                         f"Launching player (stream {candidate_index}/{len(stream_candidates)})..."
                     )

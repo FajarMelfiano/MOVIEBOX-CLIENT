@@ -487,7 +487,7 @@ class MovieBoxTUI:
                 subtitle_paths.append(subtitle_path)
 
         if player == WEB_PLAYER_TARGET:
-            subtitle_urls = [s.url for s in subtitles]
+            subtitle_urls = [subtitles[0].url] if subtitles else []
             play_stream(
                 stream_url,
                 merged_headers,
@@ -536,7 +536,7 @@ class MovieBoxTUI:
         if player == WEB_PLAYER_TARGET or (player == "mpv" and not shutil.which("mpv")):
             if player == "mpv":
                 console.print("[yellow]mpv not found, using web player...[/yellow]")
-            subtitle_urls = [s.url for s in subtitles]
+            subtitle_urls = [subtitles[0].url] if subtitles else []
             play_stream(
                 stream_url,
                 headers,

@@ -68,8 +68,111 @@ _PROXY_SERVER: ThreadingHTTPServer | None = None
 _PROXY_THREAD: threading.Thread | None = None
 _PROXY_HTTP_CLIENT: httpx.Client | None = None
 _PROXY_ROUTES: dict[str, _ProxyRoute] = {}
+_WEB_PLAYER_TOKEN: str = os.urandom(16).hex()
 
 _M3U8_URI_PATTERN = re.compile(r'URI="([^"]+)"')
+
+
+_WEB_PLAYER_CSS = """
+:root {
+    --primary: #6366f1;
+    --bg: #030712;
+    --text: #f9fafb;
+    --plyr-color-main: var(--primary);
+    --plyr-video-background: var(--bg);
+    --plyr-font-family: 'Inter', system-ui, sans-serif;
+}
+body, html { 
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background-color: var(--bg); color: var(--text);
+    font-family: var(--plyr-font-family);
+    overflow: hidden;
+}
+.player-wrapper {
+    position: relative;
+    width: 100%; height: 100%;
+    display: flex; justify-content: center; align-items: center;
+}
+.header {
+    position: absolute; top: 0; left: 0; right: 0;
+    padding: 2rem;
+    background: linear-gradient(to bottom, rgba(0,0,0,0.8) 0%, rgba(0,0,0,0) 100%);
+    display: flex; justify-content: space-between; align-items: center;
+    z-index: 10;
+    transition: opacity 0.4s ease;
+    opacity: 1;
+}
+.header.idle { opacity: 0; pointer-events: none; }
+.title-container { display: flex; align-items: center; gap: 14px; }
+.logo { 
+    font-weight: 800; font-size: 20px; letter-spacing: 1px;
+    background: linear-gradient(to right, #818cf8, #c084fc);
+    -webkit-background-clip: text; color: transparent;
+}
+.divider { width: 5px; height: 5px; border-radius: 50%; background: #4b5563; }
+.now-playing { font-weight: 500; font-size: 15px; color: #d1d5db; letter-spacing: 0.5px; }
+
+/* Customizing Plyr Overlays */
+.plyr { width: 100% !important; height: 100% !important; }
+.plyr__video-wrapper { background: #000; }
+"""
+
+_WEB_PLAYER_JS = """
+document.addEventListener('DOMContentLoaded', () => {
+    const video = document.getElementById('video-player');
+    const header = document.getElementById('header');
+    const wrapper = document.getElementById('wrapper');
+    const urlParams = new URLSearchParams(window.location.search);
+    const videoSrc = urlParams.get('video');
+    
+    const defaultOptions = {
+        keyboard: { focused: false, global: true },
+        controls: ['play-large', 'restart', 'rewind', 'play', 'fast-forward', 'progress', 'current-time', 'duration', 'mute', 'volume', 'captions', 'settings', 'pip', 'airplay', 'fullscreen'],
+        settings: ['captions', 'quality', 'speed'],
+        disableContextMenu: false,
+    };
+    
+    let player;
+
+    if (Hls.isSupported() && videoSrc.includes('.m3u8')) {
+        const hls = new Hls({ maxBufferLength: 30, maxMaxBufferLength: 600 });
+        hls.loadSource(videoSrc);
+        hls.attachMedia(video);
+        player = new Plyr(video, defaultOptions);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
+        hls.on(Hls.Events.ERROR, (evt, data) => {
+            if(data.fatal) {
+                switch(data.type) {
+                    case Hls.ErrorTypes.NETWORK_ERROR: hls.startLoad(); break;
+                    case Hls.ErrorTypes.MEDIA_ERROR: hls.recoverMediaError(); break;
+                    default: hls.destroy(); break;
+                }
+            }
+        });
+    } else {
+        video.src = videoSrc;
+        player = new Plyr(video, defaultOptions);
+        video.addEventListener('loadedmetadata', () => video.play().catch(() => {}));
+    }
+
+    let idleTimeout;
+    const resetIdle = () => {
+        header.classList.remove('idle');
+        clearTimeout(idleTimeout);
+        idleTimeout = setTimeout(() => {
+            if(!video.paused) header.classList.add('idle');
+        }, 2800);
+    };
+    
+    document.addEventListener('mousemove', resetIdle);
+    document.addEventListener('keydown', resetIdle);
+    video.addEventListener('play', resetIdle);
+    video.addEventListener('pause', () => header.classList.remove('idle'));
+    
+    resetIdle();
+});
+"""
+
 
 
 def _safe_filename_hint(filename: str, fallback: str) -> str:
@@ -428,6 +531,35 @@ class _PlaybackProxyRequestHandler(BaseHTTPRequestHandler):
             from urllib.parse import parse_qs
             query_string = self.path.split("?", 1)[1] if "?" in self.path else ""
             params = parse_qs(query_string)
+            token = params.get("t", [""])[0]
+            
+            if token != _WEB_PLAYER_TOKEN:
+                self.send_response(403)
+                self.end_headers()
+                if send_body:
+                    self.wfile.write(b"Forbidden")
+                return
+            
+            if len(parts) >= 3 and parts[2] == "style.css":
+                payload = _WEB_PLAYER_CSS.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/css")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                if send_body:
+                    self.wfile.write(payload)
+                return
+                
+            if len(parts) >= 3 and parts[2] == "script.js":
+                payload = _WEB_PLAYER_JS.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/javascript")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                if send_body:
+                    self.wfile.write(payload)
+                return
+
             video_url = params.get("video", [""])[0]
             subs_urls = params.get("sub", [])
             
@@ -437,65 +569,9 @@ class _PlaybackProxyRequestHandler(BaseHTTPRequestHandler):
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MOVIEBOX</title>
-    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&display=swap" rel="stylesheet">
-    <style>
-        :root {{
-            --primary: #6366f1;
-            --bg: #030712;
-            --text: #f9fafb;
-        }}
-        body, html {{ 
-            margin: 0; padding: 0; width: 100%; height: 100%;
-            background-color: var(--bg); color: var(--text);
-            font-family: 'Inter', system-ui, sans-serif;
-            overflow: hidden;
-        }}
-        .player-wrapper {{
-            position: relative;
-            width: 100%; height: 100%;
-            display: flex; justify-content: center; align-items: center;
-        }}
-        video {{
-            width: 100%; height: 100%;
-            outline: none; background: #000;
-        }}
-        video::-webkit-media-controls-buffering-overlay {{
-            display: none !important;
-        }}
-        .header {{
-            position: absolute; top: 0; left: 0; right: 0;
-            padding: 2rem;
-            background: linear-gradient(to bottom, rgba(0,0,0,0.8) 0%, rgba(0,0,0,0) 100%);
-            display: flex; justify-content: space-between; align-items: center;
-            z-index: 10;
-            transition: opacity 0.4s ease;
-            opacity: 1;
-        }}
-        .header.idle {{ opacity: 0; pointer-events: none; }}
-        .title-container {{ display: flex; align-items: center; gap: 14px; }}
-        .logo {{ 
-            font-weight: 800; font-size: 20px; letter-spacing: 1px;
-            background: linear-gradient(to right, #818cf8, #c084fc);
-            -webkit-background-clip: text; color: transparent;
-        }}
-        .divider {{ width: 5px; height: 5px; border-radius: 50%; background: #4b5563; }}
-        .now-playing {{ font-weight: 500; font-size: 15px; color: #d1d5db; letter-spacing: 0.5px; }}
-        
-        .loading {{
-            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            width: 48px; height: 48px;
-            border: 3px solid rgba(255,255,255,0.1);
-            border-radius: 50%;
-            border-top-color: var(--primary);
-            animation: spin 1s ease-in-out infinite;
-            z-index: 5;
-            display: none;
-            pointer-events: none;
-        }}
-        @keyframes spin {{ to {{ transform: translate(-50%, -50%) rotate(360deg); }} }}
-        video.waiting ~ .loading {{ display: block; }}
-    </style>
+    <link rel="stylesheet" href="/player/style.css?t={_WEB_PLAYER_TOKEN}" />
 </head>
 <body>
     <div class="player-wrapper" id="wrapper">
@@ -506,88 +582,57 @@ class _PlaybackProxyRequestHandler(BaseHTTPRequestHandler):
                 <div class="now-playing">Playing External Stream</div>
             </div>
         </div>
-        <video id="video-player" controls autoplay playsinline crossorigin="anonymous">
+        <video id="video-player" crossorigin="anonymous">
 """
             for i, sub in enumerate(subs_urls):
                 default = "default" if i == 0 else ""
                 html += f'            <track label="Subtitle {i+1}" kind="subtitles" srclang="en" src="{sub}" {default}>\n'
             
             html += f"""        </video>
-        <div class="loading"></div>
     </div>
-    <script>
-        const video = document.getElementById('video-player');
-        const header = document.getElementById('header');
-        const wrapper = document.getElementById('wrapper');
-        const videoSrc = "{video_url}";
-        
-        if (Hls.isSupported() && videoSrc.includes('.m3u8')) {{
-            const hls = new Hls({{ maxBufferLength: 30, maxMaxBufferLength: 600 }});
-            hls.loadSource(videoSrc); 
-            hls.attachMedia(video);
-            hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {{}}));
-            hls.on(Hls.Events.ERROR, (evt, data) => {{
-                if(data.fatal) {{
-                    switch(data.type) {{
-                        case Hls.ErrorTypes.NETWORK_ERROR: hls.startLoad(); break;
-                        case Hls.ErrorTypes.MEDIA_ERROR: hls.recoverMediaError(); break;
-                        default: hls.destroy(); break;
-                    }}
-                }}
-            }});
-        }} else if (video.canPlayType('application/vnd.apple.mpegurl')) {{
-            video.src = videoSrc; 
-            video.addEventListener('loadedmetadata', () => video.play().catch(() => {{}}));
-        }} else {{ 
-            video.src = videoSrc; 
-        }}
-
-        let idleTimeout;
-        const resetIdle = () => {{
-            header.classList.remove('idle');
-            clearTimeout(idleTimeout);
-            idleTimeout = setTimeout(() => {{
-                if(!video.paused) header.classList.add('idle');
-            }}, 2800);
-        }};
-        
-        document.addEventListener('mousemove', resetIdle);
-        document.addEventListener('keydown', resetIdle);
-        video.addEventListener('play', resetIdle);
-        video.addEventListener('pause', () => header.classList.remove('idle'));
-
-        document.addEventListener('keydown', (e) => {{
-            const focused = document.activeElement;
-            if (focused && focused.tagName === 'VIDEO') return;
-            
-            if (e.code === 'Space' || e.code === 'KeyK') {{ e.preventDefault(); video.paused ? video.play() : video.pause(); }}
-            if (e.code === 'KeyF') {{ 
-                if (!document.fullscreenElement) wrapper.requestFullscreen().catch(() => {{}});
-                else document.exitFullscreen();
-            }}
-            if (e.code === 'KeyM') {{ video.muted = !video.muted; }}
-            if (e.code === 'ArrowRight') {{ video.currentTime += 10; }}
-            if (e.code === 'ArrowLeft') {{ video.currentTime -= 10; }}
-        }});
-
-        video.addEventListener('dblclick', (e) => {{
-            e.preventDefault();
-            if (!document.fullscreenElement) wrapper.requestFullscreen().catch(() => {{}});
-            else document.exitFullscreen();
-        }});
-
-        video.addEventListener('waiting', () => video.classList.add('waiting'));
-        video.addEventListener('playing', () => video.classList.remove('waiting'));
-        video.addEventListener('canplay', () => video.classList.remove('waiting'));
-        
-        resetIdle();
-    </script>
+    <script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <script src="/player/script.js?t={_WEB_PLAYER_TOKEN}"></script>
 </body>
 </html>"""
             payload = html.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
             self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            if send_body:
+                self.wfile.write(payload)
+            return
+
+        if len(parts) >= 2 and parts[1] == "convert" and len(parts) >= 3 and parts[2] == "vtt":
+            from urllib.parse import parse_qs
+            qs = self.path.split("?", 1)[1] if "?" in self.path else ""
+            cparams = parse_qs(qs)
+            ctoken = cparams.get("t", [""])[0]
+            if ctoken != _WEB_PLAYER_TOKEN:
+                self.send_response(403)
+                self.end_headers()
+                return
+            route_token = cparams.get("route", [""])[0]
+            route = _resolve_proxy_route(route_token)
+            if route is None:
+                self.send_response(404)
+                self.end_headers()
+                return
+            client = _ensure_proxy_http_client()
+            try:
+                response = client.get(route.url, headers=route.headers)
+                srt_text = response.text
+            except Exception:
+                self.send_response(502)
+                self.end_headers()
+                return
+            vtt_text = _srt_to_vtt(srt_text)
+            payload = vtt_text.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/vtt; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             if send_body:
                 self.wfile.write(payload)
@@ -910,9 +955,47 @@ def _launch_android_target(
     return PlaybackResult(False, f"Failed to open {_ANDROID_TARGET_LABELS[target_id]}", target_id)
 
 
+def _srt_to_vtt(srt: str) -> str:
+    """Convert SRT subtitle text to WebVTT format."""
+    import re as _re
+    lines = srt.replace("\r\n", "\n").replace("\r", "\n").strip().splitlines()
+    result = ["WEBVTT", ""]
+    i = 0
+    while i < len(lines):
+        # Skip sequence number (digits-only line)
+        if i < len(lines) and lines[i].strip().isdigit():
+            i += 1
+        # Timing line: 00:00:00,000 --> 00:00:00,000
+        if i < len(lines) and "-->" in lines[i]:
+            timing = lines[i].replace(",", ".")
+            result.append(timing)
+            i += 1
+            # Collect cue text until blank line
+            while i < len(lines) and lines[i].strip() != "":
+                result.append(lines[i])
+                i += 1
+            result.append("")
+        else:
+            i += 1
+    return "\n".join(result)
+
+
 def _open_url_fallback(url: str) -> bool:
-    with open("proxy_debug.log", "a") as f:
-        f.write(f"OPENING URL: {url}\n")
+    # On Termux/Android, prefer `am start` (Activity Manager) which reliably
+    # opens URLs in the default browser registered via Android intents.
+    if is_termux_environment():
+        if shutil.which("am"):
+            result = subprocess.run(
+                ["am", "start", "-a", "android.intent.action.VIEW", "-d", url],
+                check=False, capture_output=True,
+            )
+            if result.returncode == 0:
+                return True
+        if shutil.which("termux-open-url"):
+            result = subprocess.run(["termux-open-url", url], check=False)
+            if result.returncode == 0:
+                return True
+
     if webbrowser.open(url, new=2):
         return True
     if shutil.which("xdg-open"):
@@ -1027,10 +1110,26 @@ def play_stream(
             proxied_stream, proxied_subtitles = _prepare_android_proxy_urls(
                 stream_url, headers, subtitle_urls
             )
-            query = {"video": proxied_stream}
-            if proxied_subtitles:
-                query["sub"] = proxied_subtitles
+            # Convert any .srt subtitle to .vtt via the proxy converter endpoint
             port = _ensure_proxy_server()
+            converted_subtitles = []
+            for sub_url in proxied_subtitles:
+                parsed_sub = urlparse(sub_url)
+                # Check if it's a local proxy route for an SRT file
+                sub_path = parsed_sub.path.lower()
+                sub_parts = parsed_sub.path.split("/")
+                if sub_path.endswith(".srt") and len(sub_parts) >= 3 and sub_parts[1] == "route":
+                    route_token = sub_parts[2]
+                    vtt_url = (
+                        f"http://127.0.0.1:{port}/convert/vtt"
+                        f"?route={route_token}&t={_WEB_PLAYER_TOKEN}"
+                    )
+                    converted_subtitles.append(vtt_url)
+                else:
+                    converted_subtitles.append(sub_url)
+            query = {"video": proxied_stream, "t": _WEB_PLAYER_TOKEN}
+            if converted_subtitles:
+                query["sub"] = converted_subtitles
             player_url = f"http://127.0.0.1:{port}/player?{urlencode(query, doseq=True)}"
             opened = _open_url_fallback(player_url)
             result = PlaybackResult(
