@@ -402,6 +402,9 @@ def resolve_playback_attempt_order(target_id: str | None) -> list[str]:
         if normalized in _ANDROID_TARGET_IDS | {CLI_MPV_TARGET, CLI_VLC_TARGET}:
             return [normalized]
 
+        if normalized in {WEB_PLAYER_TARGET, BROWSER_TARGET}:
+            return [normalized]
+
         if normalized == AUTO_TARGET:
             detected_targets = [target.id for target in list_playback_targets() if target.detected]
             return detected_targets or list(_ANDROID_TARGET_ORDER)
