@@ -9,6 +9,7 @@ from pathlib import Path
 import click
 
 from moviebox_api import __version__
+from moviebox_api.cli.anime_commands import download_anime_command, source_anime_command
 from moviebox_api.cli.downloader import Downloader
 from moviebox_api.cli.extras import (
     homepage_content_command,
@@ -59,6 +60,8 @@ from moviebox_api.source import SourceResolver
 __all__ = [
     "download_movie_command",
     "download_tv_series_command",
+    "download_anime_command",
+    "source_anime_command",
     "source_streams_command",
     "vega_providers_command",
     "mirror_hosts_command",
@@ -891,6 +894,8 @@ def main():
     try:
         moviebox.add_command(download_movie_command, "download-movie")
         moviebox.add_command(download_tv_series_command, "download-series")
+        moviebox.add_command(download_anime_command, "download-anime")
+        moviebox.add_command(source_anime_command, "source-anime")
         moviebox.add_command(mirror_hosts_command, "mirror-hosts")
 
         moviebox.add_command(homepage_content_command, "homepage-content")

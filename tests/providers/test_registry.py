@@ -20,6 +20,9 @@ def test_normalize_provider_name_defaults_to_moviebox():
         ("moviebox", "moviebox"),
         ("YFLIX", "yflix"),
         ("Vega", "vega"),
+        ("samehadaku", "samehadaku"),
+        ("OPLOVERS", "oplovers"),
+        ("Otakudesu", "otakudesu"),
     ],
 )
 def test_normalize_provider_name_supported_values(raw: str, expected: str):

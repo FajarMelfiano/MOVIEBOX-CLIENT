@@ -1,0 +1,11 @@
+# Manual install dependencies for MOVIEBOX-CLIENT CLI/TUI
+# Use with: python -m pip install -r requirements.txt
+
+bs4>=0.0.2
+click>=8.2.1
+httpx>=0.28.1
+keyring>=25.6.0
+pydantic>=2.12.5
+rich>=14.1.0
+textual>=0.66.0
+throttlebuster>=0.1.11

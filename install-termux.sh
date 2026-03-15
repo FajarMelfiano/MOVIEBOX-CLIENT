@@ -198,37 +198,11 @@ fi
 "$VENV_PYTHON" -m pip install --upgrade pip
 ok "pip upgraded"
 
-step "Installing moviebox with CLI extras"
-
-printf "\n"
-read -r -p "Do you want to install pydantic? (Slow build, but recommended) [y/N]: " install_pydantic
-install_pydantic=${install_pydantic,,}
-
-fallback_deps=(
-    "bs4>=0.0.2"
-    "click>=8.2.1"
-    "httpx>=0.28.1"
-    "rich>=14.1.0"
-    "textual>=0.66.0"
-    "throttlebuster>=0.1.11"
-)
-
-if [[ "$install_pydantic" =~ ^(yes|y)$ ]]; then
-    if "$VENV_PYTHON" -m pip install -e ".[cli]"; then
-        ok "moviebox installed via standard setup"
-    else
-        warn "Standard install failed, trying Termux compatibility fallback"
-        fallback_deps+=("pydantic==2.9.2")
-        "$VENV_PYTHON" -m pip install --no-deps -e .
-        "$VENV_PYTHON" -m pip install "${fallback_deps[@]}"
-        ok "moviebox and pydantic installed with fallback dependency set"
-    fi
-else
-    warn "Pydantic installation skipped. Forcing fallback proxy."
-    "$VENV_PYTHON" -m pip install --no-deps -e .
-    "$VENV_PYTHON" -m pip install "${fallback_deps[@]}"
-    ok "moviebox installed without pydantic"
-fi
+step "Installing moviebox for Termux"
+warn "Termux install uses compatibility dependency set without pydantic"
+"$VENV_PYTHON" -m pip install --no-deps -e .
+"$VENV_PYTHON" -m pip install -r requirements-termux.txt
+ok "moviebox installed with Termux compatibility dependencies"
 
 step "Configuring shell integration"
 setup_shell_integration

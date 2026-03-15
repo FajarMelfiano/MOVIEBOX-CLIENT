@@ -30,9 +30,28 @@ from textual.widgets import (
     Static,
 )
 
+from moviebox_api.anime import (
+    anime_content_subject_type,
+    anime_default_season,
+    anime_episode_count,
+    anime_genres,
+    anime_has_episode_flow,
+    anime_item_from_provider_result,
+    anime_provider_name,
+    anime_requires_season_selection,
+    anime_season_map,
+    fetch_anime_external_subtitles,
+    fetch_anime_home_items,
+    resolve_anime_sources,
+    search_anime_catalog,
+)
 from moviebox_api.constants import CURRENT_WORKING_DIR, DOWNLOAD_REQUEST_HEADERS, SubjectType
 from moviebox_api.language import language_display_name, normalize_language_id
-from moviebox_api.providers import SUPPORTED_PROVIDERS, normalize_provider_name
+from moviebox_api.providers import (
+    SUPPORTED_ANIME_PROVIDERS,
+    SUPPORTED_MEDIA_PROVIDERS,
+    normalize_provider_name,
+)
 from moviebox_api.source import SourceResolver
 from moviebox_api.stremio.catalog import (
     StremioSearchItem,
@@ -324,8 +343,15 @@ class InteractiveTextualApp(App[None]):
 
             with ContentSwitcher(initial="page_home", id="page_switcher"):
                 with Vertical(id="page_home", classes="page"):
-                    yield Static("Home - Trending Movies", classes="page_title")
+                    yield Static("Home - Trending", classes="page_title")
                     with Horizontal(classes="row"):
+                        yield Select(
+                            options=[("Movies", "MOVIES"), ("TV Series", "TV_SERIES"), ("Anime", "ANIME")],
+                            value="MOVIES",
+                            id="home_subject_select",
+                            allow_blank=False,
+                            prompt="Category",
+                        )
                         yield Button("Refresh Trending", id="home_refresh_button", variant="primary")
                         yield Button("Go To Search", id="home_go_search_button")
                     yield DataTable(id="trending_table")
@@ -335,10 +361,10 @@ class InteractiveTextualApp(App[None]):
                     )
 
                 with Vertical(id="page_search", classes="page"):
-                    yield Static("Search - Choose Movies or TV Series", classes="page_title")
+                    yield Static("Search - Choose Movies, TV Series, or Anime", classes="page_title")
                     with Horizontal(classes="row"):
                         yield Select(
-                            options=[("Movies", "MOVIES"), ("TV Series", "TV_SERIES")],
+                            options=[("Movies", "MOVIES"), ("TV Series", "TV_SERIES"), ("Anime", "ANIME")],
                             value="MOVIES",
                             id="subject_type_select",
                             allow_blank=False,
@@ -373,7 +399,7 @@ class InteractiveTextualApp(App[None]):
                         )
                     with Horizontal(classes="row"):
                         yield Select(
-                            options=[(provider, provider) for provider in SUPPORTED_PROVIDERS],
+                            options=[(provider, provider) for provider in SUPPORTED_MEDIA_PROVIDERS],
                             value="moviebox",
                             id="provider_select",
                             allow_blank=False,
@@ -452,6 +478,7 @@ class InteractiveTextualApp(App[None]):
     def on_mount(self) -> None:
         self._configure_tables()
         self._configure_player_options()
+        self._update_provider_select_options(SubjectType.MOVIES)
         self._set_page("home")
         self._apply_action_ui_state("stream")
         self.query_one("#query_input", Input).focus()
@@ -459,8 +486,8 @@ class InteractiveTextualApp(App[None]):
 
     def _configure_tables(self) -> None:
         table_defs = {
-            "#trending_table": ("#", "Title", "Year", "Rating", "Genre"),
-            "#results_table": ("#", "Title", "Year", "Rating", "Genre"),
+            "#trending_table": ("#", "Title", "Year", "Info", "Genre"),
+            "#results_table": ("#", "Title", "Year", "Info", "Genre"),
             "#streams_table": ("#", "Source", "Quality", "Audio", "Headers", "URL"),
             "#subtitle_languages_table": ("#", "Language", "Count"),
             "#subtitle_tracks_table": ("#", "Source", "Language", "Label", "URL"),
@@ -485,6 +512,92 @@ class InteractiveTextualApp(App[None]):
             player_select.value = default_target
         else:
             player_select.value = str(options[0][1])
+
+    def _selected_subject_type(self) -> SubjectType:
+        raw_value = str(self.query_one("#subject_type_select", Select).value or "MOVIES")
+        if raw_value == "TV_SERIES":
+            return SubjectType.TV_SERIES
+        if raw_value == "ANIME":
+            return SubjectType.ANIME
+        return SubjectType.MOVIES
+
+    def _selected_home_subject_type(self) -> SubjectType:
+        raw_value = str(self.query_one("#home_subject_select", Select).value or "MOVIES")
+        if raw_value == "TV_SERIES":
+            return SubjectType.TV_SERIES
+        if raw_value == "ANIME":
+            return SubjectType.ANIME
+        return SubjectType.MOVIES
+
+    @staticmethod
+    def _provider_options_for_subject(subject_type: SubjectType) -> tuple[str, ...]:
+        return SUPPORTED_ANIME_PROVIDERS if subject_type == SubjectType.ANIME else SUPPORTED_MEDIA_PROVIDERS
+
+    def _update_provider_select_options(
+        self,
+        subject_type: SubjectType,
+        *,
+        preferred_provider: str | None = None,
+    ) -> None:
+        provider_select = self.query_one("#provider_select", Select)
+        providers = self._provider_options_for_subject(subject_type)
+        provider_select.set_options([(provider, provider) for provider in providers])
+        if preferred_provider and preferred_provider in providers:
+            provider_select.value = preferred_provider
+        else:
+            provider_select.value = providers[0]
+
+        vega_input = self.query_one("#vega_provider_input", Input)
+        if subject_type == SubjectType.ANIME:
+            vega_input.add_class("hidden")
+        else:
+            vega_input.remove_class("hidden")
+
+    @staticmethod
+    def _item_has_episode_flow(item: StremioSearchItem | None) -> bool:
+        if item is None:
+            return False
+        if item.subjectType == SubjectType.TV_SERIES:
+            return True
+        return anime_has_episode_flow(item)
+
+    @staticmethod
+    def _item_requires_season_selection(item: StremioSearchItem | None) -> bool:
+        if item is None:
+            return False
+        if item.subjectType == SubjectType.TV_SERIES:
+            return True
+        return anime_requires_season_selection(item)
+
+    @staticmethod
+    def _item_info_text(item: StremioSearchItem) -> str:
+        if item.subjectType == SubjectType.ANIME:
+            status = anime_provider_name(item) or anime_content_subject_type(item).name.title()
+            episode_count = anime_episode_count(item)
+            if episode_count > 0:
+                status_text = (
+                    str(item.metadata.get('anime_payload', {}).get('status') or status).strip()
+                    or 'anime'
+                )
+                return f"{status_text} | {episode_count} eps"
+            return (
+                str(item.metadata.get('anime_payload', {}).get('status') or status).strip()
+                or 'anime'
+            )
+        return f"{item.imdbRatingValue:.1f}"
+
+    @staticmethod
+    def _item_genre_text(item: StremioSearchItem) -> str:
+        if item.subjectType == SubjectType.ANIME:
+            return ", ".join(anime_genres(item)[:2]) or "-"
+        return ", ".join(item.genre[:2]) or "-"
+
+    @staticmethod
+    def _item_media_label(item: StremioSearchItem) -> str:
+        if item.subjectType == SubjectType.ANIME:
+            semantic_type = anime_content_subject_type(item)
+            return "Anime Series" if semantic_type == SubjectType.TV_SERIES else "Anime Movie"
+        return "TV Series" if item.subjectType == SubjectType.TV_SERIES else "Movie"
 
     def action_request_quit(self) -> None:
         self.exit()
@@ -543,6 +656,9 @@ class InteractiveTextualApp(App[None]):
             await self._load_trending()
             return
         if button_id == "home_go_search_button":
+            home_subject = str(self.query_one("#home_subject_select", Select).value or "MOVIES")
+            self.query_one("#subject_type_select", Select).value = home_subject
+            self._update_provider_select_options(self._selected_subject_type())
             self._set_page("search")
             return
 
@@ -582,12 +698,32 @@ class InteractiveTextualApp(App[None]):
             self._update_run_summary()
             return
 
+        if event.select.id == "home_subject_select":
+            self.run_worker(self._load_trending(), exclusive=False, group="home")
+            return
+
+        if event.select.id == "subject_type_select":
+            self._update_provider_select_options(self._selected_subject_type())
+            self._clear_resolved_source_state()
+            return
+
+        if event.select.id == "provider_select":
+            self._clear_resolved_source_state()
+            self._set_status("Provider changed. Resolve streams again.")
+            return
+
         if event.select.id == "season_select":
             try:
                 season = int(str(event.value or "1"))
             except ValueError:
                 season = 1
             self._setup_episode_options(season)
+            self._clear_resolved_source_state()
+            self._update_run_summary()
+            return
+
+        if event.select.id == "episode_select":
+            self._clear_resolved_source_state()
             self._update_run_summary()
 
     async def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
@@ -608,9 +744,19 @@ class InteractiveTextualApp(App[None]):
             self._handle_subtitle_track_selected(event.cursor_row)
 
     async def _load_trending(self) -> None:
-        self._set_loading(True, "Loading trending movies...")
+        subject_type = self._selected_home_subject_type()
+        if subject_type == SubjectType.ANIME:
+            subject_label = 'Anime'
+        elif subject_type == SubjectType.TV_SERIES:
+            subject_label = 'TV series'
+        else:
+            subject_label = 'movies'
+        self._set_loading(True, f"Loading trending {subject_label.lower()}...")
         try:
-            items = await fetch_cinemeta_top_catalog(SubjectType.MOVIES, limit=60)
+            if subject_type == SubjectType.ANIME:
+                items = await fetch_anime_home_items(limit=60)
+            else:
+                items = await fetch_cinemeta_top_catalog(subject_type, limit=60)
         except Exception as exc:
             self._set_status(f"Failed to load trending: {exc}")
             return
@@ -625,8 +771,8 @@ class InteractiveTextualApp(App[None]):
                 str(index),
                 item.title,
                 str(item.year or "-"),
-                f"{item.imdbRatingValue:.1f}",
-                ", ".join(item.genre[:2]) or "-",
+                self._item_info_text(item),
+                self._item_genre_text(item),
             )
 
         self._set_status("Trending loaded. Select a row or go to Search page.")
@@ -646,13 +792,17 @@ class InteractiveTextualApp(App[None]):
             )
             return
 
-        selected_subject = self.query_one("#subject_type_select", Select).value
-        subject_type = SubjectType.TV_SERIES if selected_subject == "TV_SERIES" else SubjectType.MOVIES
+        subject_type = self._selected_subject_type()
+        self._update_provider_select_options(subject_type)
 
         self._set_loading(True, "Searching catalog...")
-        self._set_status(f"Searching Cinemeta for '{query}'...")
+        status_target = "anime providers" if subject_type == SubjectType.ANIME else "Cinemeta"
+        self._set_status(f"Searching {status_target} for '{query}'...")
         try:
-            results = await search_cinemeta_catalog(query, subject_type)
+            if subject_type == SubjectType.ANIME:
+                results = await search_anime_catalog(query)
+            else:
+                results = await search_cinemeta_catalog(query, subject_type)
         except Exception as exc:
             self._set_status(f"Search failed: {exc}")
             return
@@ -669,8 +819,8 @@ class InteractiveTextualApp(App[None]):
                 str(index),
                 item.title,
                 str(item.year or "-"),
-                f"{item.imdbRatingValue:.1f}",
-                ", ".join(item.genre[:2]) or "-",
+                self._item_info_text(item),
+                self._item_genre_text(item),
             )
 
         if not self.displayed_search_items:
@@ -752,10 +902,21 @@ class InteractiveTextualApp(App[None]):
     async def _select_item(self, item: StremioSearchItem) -> None:
         self._reset_from_item_selection()
         self.selected_item = item
+        preferred_provider = anime_provider_name(item) if item.subjectType == SubjectType.ANIME else None
+        self._update_provider_select_options(item.subjectType, preferred_provider=preferred_provider)
+        subtitle_language_input = self.query_one("#subtitle_language_input", Input)
+        subtitle_language_input.value = "Indonesian" if item.subjectType == SubjectType.ANIME else ""
         self._update_source_item_label()
 
         episode_row = self.query_one("#source_episode_row")
-        if item.subjectType == SubjectType.TV_SERIES:
+        if item.subjectType == SubjectType.ANIME:
+            self.season_map = anime_season_map(item)
+            if self._item_has_episode_flow(item):
+                episode_row.remove_class("hidden")
+                self._setup_episode_selects()
+            else:
+                episode_row.add_class("hidden")
+        elif item.subjectType == SubjectType.TV_SERIES:
             episode_row.remove_class("hidden")
             self._set_loading(True, "Loading season metadata...")
             try:
@@ -782,10 +943,16 @@ class InteractiveTextualApp(App[None]):
             seasons = [1]
 
         season_select = self.query_one("#season_select", Select)
+        episode_select = self.query_one("#episode_select", Select)
         season_select.set_options([(f"Season {season}", str(season)) for season in seasons])
 
         chosen_season = selected_season if selected_season in seasons else seasons[0]
         season_select.value = str(chosen_season)
+        if self.selected_item is not None and not self._item_requires_season_selection(self.selected_item):
+            season_select.add_class("hidden")
+        else:
+            season_select.remove_class("hidden")
+        episode_select.remove_class("hidden")
         self._setup_episode_options(chosen_season, selected_episode)
 
     def _setup_episode_options(self, season: int, selected_episode: int | None = None) -> None:
@@ -831,15 +998,23 @@ class InteractiveTextualApp(App[None]):
         if not silent:
             self._set_status(f"Resolving streams via {provider_name}...")
         try:
-            _, streams, subtitles = await SourceResolver(provider_name=provider_name).resolve(
-                title=self.selected_item.title,
-                subject_type=self.selected_item.subjectType,
-                year=self.selected_item.year,
-                season=season,
-                episode=episode,
-                imdb_id=self.selected_item.imdbId,
-                tmdb_id=self.selected_item.tmdbId,
-            )
+            if self.selected_item.subjectType == SubjectType.ANIME:
+                resolved_item, streams, subtitles, _resolved_provider = await resolve_anime_sources(
+                    self.selected_item,
+                    provider_name=provider_name,
+                    season=season,
+                    episode=episode,
+                )
+            else:
+                resolved_item, streams, subtitles = await SourceResolver(provider_name=provider_name).resolve(
+                    title=self.selected_item.title,
+                    subject_type=self.selected_item.subjectType,
+                    year=self.selected_item.year,
+                    season=season,
+                    episode=episode,
+                    imdb_id=self.selected_item.imdbId,
+                    tmdb_id=self.selected_item.tmdbId,
+                )
         except Exception as exc:
             if not silent:
                 self._set_status(f"Provider resolution failed: {exc}")
@@ -847,7 +1022,29 @@ class InteractiveTextualApp(App[None]):
         finally:
             self._set_loading(False)
 
-        self.selected_provider_name = provider_name
+        if self.selected_item.subjectType == SubjectType.ANIME and resolved_item is not None:
+            resolved_provider_name = str(resolved_item.payload.get("provider_name") or provider_name)
+            if (
+                self.selected_item.page_url != resolved_item.page_url
+                or anime_provider_name(self.selected_item) != resolved_provider_name
+            ):
+                self.selected_item = anime_item_from_provider_result(resolved_item)
+                self.season_map = anime_season_map(self.selected_item)
+                episode_row = self.query_one("#source_episode_row")
+                if self._item_has_episode_flow(self.selected_item):
+                    episode_row.remove_class("hidden")
+                    normalized_season = season if season > 0 else anime_default_season(self.selected_item)
+                    normalized_episode = episode if episode > 0 else 1
+                    self._setup_episode_selects(
+                        selected_season=normalized_season,
+                        selected_episode=normalized_episode,
+                    )
+                else:
+                    episode_row.add_class("hidden")
+                self._update_source_item_label()
+            self.selected_provider_name = resolved_provider_name
+        else:
+            self.selected_provider_name = provider_name
         self.resolved_streams = streams
         self.resolved_subtitles = subtitles
         self.selected_stream = None
@@ -910,6 +1107,9 @@ class InteractiveTextualApp(App[None]):
                 self.preferred_subtitle_language_id = candidate
         elif self.preferred_subtitle_language_id:
             preferred_language_id = self.preferred_subtitle_language_id
+        elif self.selected_item.subjectType == SubjectType.ANIME:
+            preferred_language_id = "ind"
+            self.preferred_subtitle_language_id = "ind"
 
         if source_choice == "none":
             self.selected_subtitles = []
@@ -921,12 +1121,17 @@ class InteractiveTextualApp(App[None]):
 
         subtitles: list[SubtitleChoice] = []
         external_fetch_error_message = ""
+        provider_subtitles = self._collect_provider_subtitles()
         if source_choice in {"provider", "all"}:
-            subtitles.extend(self._collect_provider_subtitles())
+            subtitles.extend(provider_subtitles)
 
-        if source_choice in {"opensubtitles", "subdl", "subsource", "all"}:
-            sources = self._resolve_external_sources(source_choice)
-            if not sources and source_choice in {"subdl", "subsource"}:
+        external_choice = source_choice
+        if source_choice == "provider" and not provider_subtitles:
+            external_choice = "all"
+
+        if external_choice in {"opensubtitles", "subdl", "subsource", "all"}:
+            sources = self._resolve_external_sources(external_choice)
+            if not sources and external_choice in {"subdl", "subsource"}:
                 return False
             if sources:
                 self._set_loading(True, "Fetching external subtitles...")
@@ -1017,7 +1222,7 @@ class InteractiveTextualApp(App[None]):
 
     async def _handle_execute(self) -> None:
         action = str(self.query_one("#action_select", Select).value or "stream")
-        is_tv_series = bool(self.selected_item and self.selected_item.subjectType == SubjectType.TV_SERIES)
+        has_episode_flow = self._item_has_episode_flow(self.selected_item)
         selected_player_target = self._selected_player_target_id()
         uses_android_external_player = is_android_target(selected_player_target)
 
@@ -1026,7 +1231,7 @@ class InteractiveTextualApp(App[None]):
             if not success:
                 return
 
-            if is_tv_series:
+            if has_episode_flow:
 
                 async def _on_continue_download() -> bool:
                     if not self._advance_episode_selector():
@@ -1047,14 +1252,14 @@ class InteractiveTextualApp(App[None]):
                 return
 
             self._set_page("home")
-            self._set_status("Movie download finished. Returned to Home page.")
+            self._set_status("Download finished. Returned to Home page.")
             return
 
-        if not is_tv_series:
+        if not has_episode_flow:
             success = await self._handle_play()
             if success:
                 self._set_page("home")
-                self._set_status("Movie playback finished. Returned to Home page.")
+                self._set_status("Playback finished. Returned to Home page.")
             return
 
         if uses_android_external_player:
@@ -1314,7 +1519,7 @@ class InteractiveTextualApp(App[None]):
         return True
 
     def _advance_episode_selector(self) -> bool:
-        if self.selected_item is None or self.selected_item.subjectType != SubjectType.TV_SERIES:
+        if self.selected_item is None or not self._item_has_episode_flow(self.selected_item):
             return False
 
         season, episode = self._read_season_episode()
@@ -1450,14 +1655,23 @@ class InteractiveTextualApp(App[None]):
         if season is None or episode is None:
             return []
 
-        content_type = "series" if self.selected_item.subjectType == SubjectType.TV_SERIES else "movie"
-        video_id = build_stremio_video_id(self.selected_item, season=season, episode=episode)
-        fetched = await fetch_external_subtitles(
-            video_id=video_id,
-            content_type=content_type,
-            sources=sources,
-            preferred_languages=[preferred_language_id] if preferred_language_id else None,
-        )
+        if self.selected_item.subjectType == SubjectType.ANIME:
+            fetched = await fetch_anime_external_subtitles(
+                self.selected_item,
+                season=season,
+                episode=episode,
+                sources=sources,
+                preferred_languages=[preferred_language_id] if preferred_language_id else None,
+            )
+        else:
+            content_type = "series" if self.selected_item.subjectType == SubjectType.TV_SERIES else "movie"
+            video_id = build_stremio_video_id(self.selected_item, season=season, episode=episode)
+            fetched = await fetch_external_subtitles(
+                video_id=video_id,
+                content_type=content_type,
+                sources=sources,
+                preferred_languages=[preferred_language_id] if preferred_language_id else None,
+            )
 
         return [
             SubtitleChoice(
@@ -1540,11 +1754,15 @@ class InteractiveTextualApp(App[None]):
         if self.selected_item is None:
             return (None, None)
 
-        if self.selected_item.subjectType != SubjectType.TV_SERIES:
+        if not self._item_has_episode_flow(self.selected_item):
             return (0, 0)
 
-        season_value = self.query_one("#season_select", Select).value
+        season_select = self.query_one("#season_select", Select)
         episode_value = self.query_one("#episode_select", Select).value
+        if self.selected_item.subjectType == SubjectType.ANIME and season_select.has_class("hidden"):
+            season_value = anime_default_season(self.selected_item)
+        else:
+            season_value = season_select.value
 
         try:
             season = int(str(season_value or "1"))
@@ -1596,8 +1814,7 @@ class InteractiveTextualApp(App[None]):
         self.query_one("#subtitle_languages_table", DataTable).clear(columns=False)
         self.query_one("#subtitle_tracks_table", DataTable).clear(columns=False)
 
-    def _reset_from_item_selection(self) -> None:
-        self.season_map = {}
+    def _clear_resolved_source_state(self) -> None:
         self.selected_provider_name = ""
         self.resolved_streams = []
         self.selected_stream = None
@@ -1605,11 +1822,18 @@ class InteractiveTextualApp(App[None]):
         self.subtitles_by_language = {}
         self.subtitle_language_order = []
         self.selected_subtitles = []
-        self.preferred_subtitle_language_id = None
+        self.selected_subtitle_track = None
+        try:
+            self.query_one("#streams_table", DataTable).clear(columns=False)
+            self._clear_subtitle_tables()
+            self._update_subtitle_stream_label()
+        except NoMatches:
+            return
 
-        self.query_one("#streams_table", DataTable).clear(columns=False)
-        self._clear_subtitle_tables()
-        self._update_subtitle_stream_label()
+    def _reset_from_item_selection(self) -> None:
+        self.season_map = {}
+        self._clear_resolved_source_state()
+        self.preferred_subtitle_language_id = None
 
     def _update_source_item_label(self) -> None:
         label = self.query_one("#source_item_label", Static)
@@ -1619,7 +1843,11 @@ class InteractiveTextualApp(App[None]):
 
         title = self.selected_item.title
         year_text = f" ({self.selected_item.year})" if self.selected_item.year else ""
-        media_type = "TV Series" if self.selected_item.subjectType == SubjectType.TV_SERIES else "Movie"
+        media_type = self._item_media_label(self.selected_item)
+        if self.selected_item.subjectType == SubjectType.ANIME:
+            provider_label = anime_provider_name(self.selected_item) or self.selected_provider_name or "anime"
+            label.update(f"Selected: {title}{year_text} | {media_type} | Provider: {provider_label}")
+            return
         label.update(f"Selected: {title}{year_text} | {media_type} | IMDB: {self.selected_item.imdbId}")
 
     def _update_subtitle_stream_label(self) -> None:
@@ -1645,14 +1873,14 @@ class InteractiveTextualApp(App[None]):
         action = str(self.query_one("#action_select", Select).value or "stream")
         player_target = self._selected_player_label()
         subtitle_count = len(self.selected_subtitles)
-        provider_text = self.selected_provider_name or "-"
+        provider_text = self.selected_provider_name or anime_provider_name(self.selected_item) or "-"
         quality = self.selected_stream.quality or "-"
         audio = self._stream_audio_label(self.selected_stream)
         episode_info = ""
-        if self.selected_item.subjectType == SubjectType.TV_SERIES:
+        if self._item_has_episode_flow(self.selected_item):
             season, episode = self._read_season_episode()
             if season is not None and episode is not None:
-                episode_info = f" | Episode: S{season:02d}E{episode:02d}"
+                episode_info = f" | Episode: {self._episode_code(self.selected_item, season, episode)}"
         summary.update(
             f"Title: {self.selected_item.title} | Provider: {provider_text} | "
             f"Stream: {self.selected_stream.source} [{quality}] | Audio: {audio} | "
@@ -1668,6 +1896,15 @@ class InteractiveTextualApp(App[None]):
             if target.id == target_id:
                 return target.label
         return target_id
+
+    def _episode_code(self, item: StremioSearchItem | None, season: int, episode: int) -> str:
+        if (
+            item is not None
+            and item.subjectType == SubjectType.ANIME
+            and not self._item_requires_season_selection(item)
+        ):
+            return f"E{episode:02d}"
+        return f"S{season:02d}E{episode:02d}"
 
     @staticmethod
     def _stream_audio_label(stream) -> str:
@@ -1742,7 +1979,11 @@ class InteractiveTextualApp(App[None]):
         candidates = list(self._stream_fallback_candidates(selected_stream))
         seen_urls = {str(getattr(stream, "url", "") or "").strip() for stream in candidates}
 
-        if self.selected_item is None or self.selected_provider_name == "moviebox":
+        if (
+            self.selected_item is None
+            or self.selected_provider_name == "moviebox"
+            or self.selected_item.subjectType == SubjectType.ANIME
+        ):
             return candidates
 
         season, episode = self._read_season_episode()
@@ -1853,7 +2094,10 @@ class InteractiveTextualApp(App[None]):
         async def _default_on_stop() -> bool:
             return False
 
-        message = f"Current selection S{season:02d}E{episode:02d}. Continue to next episode?"
+        message = (
+            f"Current selection {self._episode_code(self.selected_item, season, episode)}. "
+            "Continue to next episode?"
+        )
         try:
             answer = await self.push_screen_wait(
                 ContinuePromptScreen(
@@ -1970,8 +2214,8 @@ class InteractiveTextualApp(App[None]):
         parts = [item.title]
         if item.year:
             parts.append(f"({item.year})")
-        if item.subjectType == SubjectType.TV_SERIES:
-            parts.append(f"S{season:02d}E{episode:02d}")
+        if self._item_has_episode_flow(item):
+            parts.append(self._episode_code(item, season, episode))
         if quality:
             parts.append(str(quality))
         return self._sanitize_filename(" ".join(parts))

@@ -1,0 +1,10 @@
+# Manual install dependencies for MOVIEBOX-CLIENT on Termux
+# Termux intentionally excludes pydantic and keyring.
+# Use with: python -m pip install -r requirements-termux.txt
+
+bs4>=0.0.2
+click>=8.2.1
+httpx>=0.28.1
+rich>=14.1.0
+textual>=0.66.0
+throttlebuster>=0.1.11

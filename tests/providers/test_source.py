@@ -154,3 +154,37 @@ async def test_resolve_prefers_id_builder_when_available(monkeypatch):
     assert resolved_streams == streams
     assert fake_provider.id_builder_calls == 1
     assert fake_provider.search_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_resolve_delegates_anime_subjects_to_anime_helper(monkeypatch):
+    item = ProviderSearchResult(
+        id="anime-1",
+        title="One Piece",
+        page_url="https://example.com/one-piece",
+        subject_type=SubjectType.ANIME,
+    )
+    streams = [ProviderStream(url="https://example.com/stream.mp4", source="samehadaku")]
+    subtitles = [ProviderSubtitle(url="https://example.com/sub.ass", language="id")]
+
+    async def _fake_resolve_anime_source_query(title: str, **kwargs):
+        assert title == "One Piece"
+        assert kwargs["provider_name"] == "samehadaku"
+        return item, streams, subtitles, "samehadaku"
+
+    monkeypatch.setattr(
+        "moviebox_api.anime.resolve_anime_source_query",
+        _fake_resolve_anime_source_query,
+    )
+
+    resolver = SourceResolver("samehadaku")
+    resolved_item, resolved_streams, resolved_subtitles = await resolver.resolve(
+        "One Piece",
+        SubjectType.ANIME,
+        season=1,
+        episode=1,
+    )
+
+    assert resolved_item == item
+    assert resolved_streams == streams
+    assert resolved_subtitles == subtitles

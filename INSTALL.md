@@ -73,6 +73,7 @@ moviebox interactive-tui
 Note:
 
 - Installer also installs `termux-api` so TUI can open native text dialog (`Type (Termux)`) when keyboard focus is limited.
+- Termux install intentionally skips `pydantic` and uses the compatibility layer in `src/moviebox_api/pydantic_compat.py`.
 
 ## 2) What installers configure
 
@@ -80,7 +81,7 @@ All installers:
 
 - Create or reuse `.venv`
 - Upgrade `pip`
-- Install editable package with CLI extras (`-e ".[cli]"`)
+- Install project dependencies for the target platform (desktop CLI extras or Termux compatibility requirements)
 - Verify `moviebox` entrypoint in `.venv`
 
 Shell integration (automatic by default):
@@ -134,9 +135,20 @@ PowerShell:
 
 Install:
 
+Linux/macOS/Windows:
+
 ```bash
 python -m pip install --upgrade pip
-python -m pip install -e ".[cli]"
+python -m pip install -r requirements.txt
+python -m pip install --no-deps -e .
+```
+
+Termux:
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install -r requirements-termux.txt
+python -m pip install --no-deps -e .
 ```
 
 ## 4) Autocompletion setup (manual)

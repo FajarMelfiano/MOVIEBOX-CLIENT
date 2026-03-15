@@ -1,13 +1,13 @@
 # Moviebox Client
 
-Unofficial Python client for searching, streaming, and downloading movies or TV episodes with subtitle support.
+Unofficial Python client for searching, streaming, and downloading movies, TV episodes, or anime with subtitle support.
 
 ## What is included
 
 - Interactive full-screen TUI (`moviebox interactive-tui`) with page flow:
   - `Home -> Search -> Source -> Subtitle -> Run`
 - Legacy menu mode (`moviebox interactive`) for users who prefer prompt-based navigation.
-- Provider-based stream resolution (`moviebox`, `yflix`, `vega`).
+- Provider-based stream resolution for movies/TV (`moviebox`, `yflix`, `vega`) and anime (`samehadaku`, `oplovers`, `otakudesu`).
 - Subtitle source selection (`provider`, `opensubtitles`, `subdl`, `subsource`, `all`).
 - Secret management for subtitle API keys (`secret-set`, `secret-status`, `secret-unset`).
 - CLI audio fallback preference for downloads (`--audio`).
@@ -52,6 +52,11 @@ chmod +x install-termux.sh
 
 Detailed platform notes are in `INSTALL.md`.
 
+Manual dependency files are also available:
+
+- `requirements.txt` for standard desktop/server installs
+- `requirements-termux.txt` for Termux installs without `pydantic`
+
 ## Quick start
 
 After install:
@@ -88,6 +93,15 @@ moviebox download-movie "Interstellar" --audio English
 
 # Stream directly with a local player
 moviebox download-movie "Interstellar" --stream-via mpv
+
+# Resolve and stream anime episode metadata
+moviebox source-anime "One Piece" -p samehadaku --json
+
+# Download anime episode with Indonesian subtitle preference
+moviebox download-anime "One Piece" -p samehadaku -e 1 -x Indonesian
+
+# Stream anime directly to Android/desktop player targets
+moviebox download-anime "Solo Leveling" -p oplovers -e 1 --stream-via vlc
 ```
 
 ### Provider resolution
@@ -149,15 +163,15 @@ export MOVIEBOX_SUBTITLE_PROXY_DISABLE=1
 
 `moviebox interactive-tui` currently supports:
 
-- Home trending list from Cinemeta/Stremio catalog.
-- Search by subject type (Movies or TV Series).
-- TV season/episode dropdown selectors.
+- Home trending list from Cinemeta/Stremio catalog for Movies/TV and provider feeds for Anime.
+- Search by subject type (Movies, TV Series, or Anime).
+- TV season/episode dropdown selectors and anime episode selectors sourced from provider metadata.
 - Source provider and stream selection.
 - Subtitle source selection with full language names (not short code labels).
 - Run page for stream/download actions and player target selection.
 - Stream fallback for video/audio variants; subtitle-launch fallback if app extras are unsupported.
-- TV next episode flow with explicit confirmation (continue or stop).
-- Movie run returns to Home after completion.
+- TV and episodic-anime next episode flow with explicit confirmation (continue or stop).
+- Movie/anime-movie run returns to Home after completion.
 
 ## Shell productivity
 
@@ -183,10 +197,13 @@ Manual completion and auto-venv setup instructions are documented in `INSTALL.md
 
 ## Provider notes
 
-- Supported providers: `moviebox`, `yflix`, `vega`.
+- Supported movie/TV providers: `moviebox`, `yflix`, `vega`.
+- Supported anime providers: `samehadaku`, `oplovers`, `otakudesu`.
 - `nepu` and `tmdb_embed` are removed from active provider flow.
 - `yflix` token generation requires `node` in `PATH`.
 - Dynamic Vega modules execute remote provider logic; use trusted manifests only.
+- Anime providers are Indonesian-first sources; provider subtitles default to Indonesian and automatically fall back to external subtitle APIs when provider subtitles are missing.
+- Override anime source domains with environment variables when mirrors change: `MOVIEBOX_SAMEHADAKU_URLS`, `MOVIEBOX_OPLOVERS_URLS`, `MOVIEBOX_OPLOVERS_API_URLS`, `MOVIEBOX_OTAKUDESU_URLS`.
 
 ## Termux notes
 

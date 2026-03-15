@@ -30,6 +30,8 @@ def test_version():
     argvalues=[
         ["download-movie --help"],
         ["download-series --help"],
+        ["download-anime --help"],
+        ["source-anime --help"],
         ["mirror-hosts --help"],
         ["homepage-content --help"],
         ["popular-search --help"],

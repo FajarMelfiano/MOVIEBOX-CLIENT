@@ -43,6 +43,7 @@ def test_list_playback_targets_termux_contains_fixed_android_player_choices(
         playback.ANDROID_VLC_TARGET,
         playback.ANDROID_MX_PRO_TARGET,
         playback.ANDROID_MX_FREE_TARGET,
+        playback.WEB_PLAYER_TARGET,
     ]
 
 
@@ -136,3 +137,63 @@ def test_play_stream_android_prefers_local_proxy_launch(monkeypatch: pytest.Monk
     assert result.success is True
     assert "local proxy" in result.message
     assert launched["url"].startswith("http://127.0.0.1")
+
+
+def test_build_web_player_html_uses_media_title_and_divider_state_hook():
+    html = playback._build_web_player_html(
+        media_title='Jujutsu Kaisen Season 3',
+        subtitle_urls=['https://example.com/sub.vtt'],
+    )
+
+    assert '<title>Jujutsu Kaisen Season 3</title>' in html
+    assert 'id="divider"' in html
+    assert 'id="now-playing">Jujutsu Kaisen Season 3<' in html
+    assert 'src="https://example.com/sub.vtt"' in html
+
+
+def test_play_stream_web_player_includes_media_title_in_query(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv('TERMUX_VERSION', raising=False)
+    monkeypatch.setattr(
+        playback,
+        'resolve_playback_attempt_order',
+        lambda _target: [playback.WEB_PLAYER_TARGET],
+    )
+    monkeypatch.setattr(
+        playback,
+        '_prepare_android_proxy_urls',
+        lambda *_args, **_kwargs: ('http://127.0.0.1:9999/route/abc.m3u8', []),
+    )
+    monkeypatch.setattr(playback, '_ensure_proxy_server', lambda: 9999)
+
+    opened = {'url': ''}
+
+    def _fake_open_url(url: str) -> bool:
+        opened['url'] = url
+        return True
+
+    monkeypatch.setattr(playback, '_open_url_fallback', _fake_open_url)
+
+    result = playback.play_stream(
+        'https://example.com/master.m3u8',
+        {'Referer': 'https://example.com'},
+        [],
+        target_id=playback.WEB_PLAYER_TARGET,
+        media_title='Jujutsu Kaisen Season 3',
+    )
+
+    assert result.success is True
+    assert 'title=Jujutsu+Kaisen+Season+3' in opened['url']
+
+
+def test_normalized_passthrough_content_type_uses_media_extension():
+    assert playback._normalized_passthrough_content_type(
+        'https://cdn.example/video.mp4?token=123',
+        'application/octet-stream',
+    ) == 'video/mp4'
+
+
+def test_normalized_passthrough_content_type_keeps_specific_header():
+    assert playback._normalized_passthrough_content_type(
+        'https://cdn.example/video.mp4?token=123',
+        'video/mp4',
+    ) == 'video/mp4'

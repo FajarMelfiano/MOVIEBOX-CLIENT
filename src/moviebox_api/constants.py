@@ -108,6 +108,8 @@ class SubjectType(IntEnum):
     """Movies content only"""
     TV_SERIES = 2
     """TV Series content only"""
+    ANIME = 8
+    """Anime content handled by external provider adapters"""
     MUSIC = 6
     """Music contents only"""
 

@@ -15,21 +15,33 @@ from typing import cast
 from urllib.parse import urlparse
 
 import httpx
-from moviebox_api.pydantic_compat import HttpUrl
 from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 
+from moviebox_api.anime import (
+    anime_default_season,
+    anime_has_episode_flow,
+    anime_requires_season_selection,
+    anime_season_map,
+    fetch_anime_external_subtitles,
+    search_anime_catalog,
+)
 from moviebox_api.constants import CURRENT_WORKING_DIR, DOWNLOAD_REQUEST_HEADERS, SubjectType
 from moviebox_api.download import CaptionFileDownloader, MediaFileDownloader
 from moviebox_api.helpers import get_event_loop
 from moviebox_api.language import language_display_name, normalize_language_id
 from moviebox_api.models import CaptionFileMetadata, MediaFileMetadata
-from moviebox_api.providers import SUPPORTED_PROVIDERS, normalize_provider_name
+from moviebox_api.providers import (
+    SUPPORTED_ANIME_PROVIDERS,
+    SUPPORTED_MEDIA_PROVIDERS,
+    normalize_provider_name,
+)
 from moviebox_api.providers.models import ProviderStream, ProviderSubtitle
 from moviebox_api.providers.vega_provider import ENV_VEGA_PROVIDER_KEY
+from moviebox_api.pydantic_compat import HttpUrl
 from moviebox_api.source import SourceResolver
 from moviebox_api.stremio.catalog import (
     StremioSearchItem,
@@ -45,7 +57,7 @@ from moviebox_api.stremio.subtitle_sources import (
     fetch_external_subtitles,
     subtitle_source_is_configured,
 )
-from moviebox_api.tui.playback import play_stream, WEB_PLAYER_TARGET
+from moviebox_api.tui.playback import WEB_PLAYER_TARGET, play_stream
 
 console = Console()
 
@@ -121,14 +133,20 @@ class MovieBoxTUI:
             self.show_header()
             console.print("1) Movies")
             console.print("2) TV series")
+            console.print("3) Anime")
             console.print("0) Exit")
-            choice = Prompt.ask("Select", choices=["0", "1", "2"], default="1")
+            choice = Prompt.ask("Select", choices=["0", "1", "2", "3"], default="1")
 
             if choice == "0":
                 console.print("Bye.")
                 return
 
-            subject_type = SubjectType.MOVIES if choice == "1" else SubjectType.TV_SERIES
+            if choice == "1":
+                subject_type = SubjectType.MOVIES
+            elif choice == "2":
+                subject_type = SubjectType.TV_SERIES
+            else:
+                subject_type = SubjectType.ANIME
             try:
                 self._run_search_flow(subject_type)
             except KeyboardInterrupt:
@@ -143,7 +161,10 @@ class MovieBoxTUI:
         if not query:
             raise ValueError("Search query cannot be empty")
 
-        items = get_event_loop().run_until_complete(search_cinemeta_catalog(query, subject_type))
+        if subject_type == SubjectType.ANIME:
+            items = get_event_loop().run_until_complete(search_anime_catalog(query))
+        else:
+            items = get_event_loop().run_until_complete(search_cinemeta_catalog(query, subject_type))
         if not items:
             console.print("No results found.")
             return
@@ -151,10 +172,10 @@ class MovieBoxTUI:
         selected = self._choose_item(items)
         season = 0
         episode = 0
-        if selected.subjectType == SubjectType.TV_SERIES:
+        if selected.subjectType == SubjectType.TV_SERIES or anime_has_episode_flow(selected):
             season, episode = self._choose_episode(selected)
 
-        provider_name = self._choose_provider()
+        provider_name = self._choose_provider(selected.subjectType)
         action = Prompt.ask("Action", choices=["stream", "download"], default="stream")
 
         item, streams, subtitles = get_event_loop().run_until_complete(
@@ -213,10 +234,23 @@ class MovieBoxTUI:
         return top_items[selected_index]
 
     def _choose_episode(self, item: StremioSearchItem) -> tuple[int, int]:
-        meta = get_event_loop().run_until_complete(fetch_cinemeta_meta(item))
-        seasons = extract_series_seasons(meta)
-        if not seasons:
-            raise RuntimeError("Could not load season/episode information from Cinemeta")
+        if item.subjectType == SubjectType.ANIME:
+            seasons = anime_season_map(item)
+            if not seasons:
+                raise RuntimeError("Could not load season/episode information from anime provider metadata")
+        else:
+            meta = get_event_loop().run_until_complete(fetch_cinemeta_meta(item))
+            seasons = extract_series_seasons(meta)
+            if not seasons:
+                raise RuntimeError("Could not load season/episode information from Cinemeta")
+
+        if item.subjectType == SubjectType.ANIME and not anime_requires_season_selection(item):
+            season_number = anime_default_season(item)
+            max_episode = seasons.get(season_number, 1)
+            episode_number = int(Prompt.ask("Episode number", default="1"))
+            if episode_number < 1 or episode_number > max_episode:
+                raise ValueError(f"Episode out of range. Available: 1..{max_episode}")
+            return season_number, episode_number
 
         season_rows = [
             [str(index), f"Season {season}", f"{episodes} episodes"]
@@ -230,10 +264,13 @@ class MovieBoxTUI:
             raise ValueError(f"Episode out of range. Season {season_number} has 1..{max_episode}")
         return season_number, episode_number
 
-    def _choose_provider(self) -> str:
-        rows = [[str(index), provider] for index, provider in enumerate(SUPPORTED_PROVIDERS, start=1)]
+    def _choose_provider(self, subject_type: SubjectType) -> str:
+        providers = (
+            SUPPORTED_ANIME_PROVIDERS if subject_type == SubjectType.ANIME else SUPPORTED_MEDIA_PROVIDERS
+        )
+        rows = [[str(index), provider] for index, provider in enumerate(providers, start=1)]
         provider_index = _pick_from_table("Providers", ["#", "Provider"], rows)
-        base_provider = SUPPORTED_PROVIDERS[provider_index]
+        base_provider = providers[provider_index]
 
         if base_provider == "vega":
             default_value = os.getenv(ENV_VEGA_PROVIDER_KEY, "autoEmbed").strip() or "autoEmbed"
@@ -273,18 +310,24 @@ class MovieBoxTUI:
         if source_choice == "none":
             return []
 
+        default_language = "Indonesian" if item.subjectType == SubjectType.ANIME else ""
         preferred_language_id = Prompt.ask(
             "Preferred subtitle language (optional, for example Indonesian)",
-            default="",
+            default=default_language,
         ).strip()
         preferred_language = preferred_language_id or None
 
         subtitle_entries: list[_SubtitleChoice] = []
+        provider_entries = self._collect_provider_subtitles(stream_subtitles, provider_subtitles)
         if source_choice in {"provider", "all"}:
-            subtitle_entries.extend(self._collect_provider_subtitles(stream_subtitles, provider_subtitles))
+            subtitle_entries.extend(provider_entries)
 
-        if source_choice in {"opensubtitles", "subdl", "subsource", "all"}:
-            external_sources = self._resolve_external_sources(source_choice)
+        external_source_choice = source_choice
+        if source_choice == "provider" and not provider_entries:
+            external_source_choice = "all"
+
+        if external_source_choice in {"opensubtitles", "subdl", "subsource", "all"}:
+            external_sources = self._resolve_external_sources(external_source_choice)
             if external_sources:
                 external_items = self._fetch_external_subtitles(
                     item,
@@ -432,16 +475,27 @@ class MovieBoxTUI:
         sources: list[str],
         preferred_languages: list[str] | None = None,
     ) -> list[_SubtitleChoice]:
-        content_type = "series" if item.subjectType == SubjectType.TV_SERIES else "movie"
-        video_id = build_stremio_video_id(item, season=season, episode=episode)
-        fetched: list[ExternalSubtitle] = get_event_loop().run_until_complete(
-            fetch_external_subtitles(
-                video_id=video_id,
-                content_type=content_type,
-                sources=sources,
-                preferred_languages=preferred_languages,
+        if item.subjectType == SubjectType.ANIME:
+            fetched: list[ExternalSubtitle] = get_event_loop().run_until_complete(
+                fetch_anime_external_subtitles(
+                    item,
+                    season=season,
+                    episode=episode,
+                    sources=sources,
+                    preferred_languages=preferred_languages,
+                )
             )
-        )
+        else:
+            content_type = "series" if item.subjectType == SubjectType.TV_SERIES else "movie"
+            video_id = build_stremio_video_id(item, season=season, episode=episode)
+            fetched = get_event_loop().run_until_complete(
+                fetch_external_subtitles(
+                    video_id=video_id,
+                    content_type=content_type,
+                    sources=sources,
+                    preferred_languages=preferred_languages,
+                )
+            )
         return [
             _SubtitleChoice(
                 url=subtitle.url,
@@ -642,8 +696,11 @@ class MovieBoxTUI:
         title_bits = [item.title]
         if item.year:
             title_bits.append(f"({item.year})")
-        if item.subjectType == SubjectType.TV_SERIES:
-            title_bits.append(f"S{season:02d}E{episode:02d}")
+        if item.subjectType == SubjectType.TV_SERIES or anime_has_episode_flow(item):
+            if item.subjectType == SubjectType.ANIME and not anime_requires_season_selection(item):
+                title_bits.append(f"E{episode:02d}")
+            else:
+                title_bits.append(f"S{season:02d}E{episode:02d}")
         base_filename = _sanitize_filename(" ".join(title_bits))
 
         media_file = MediaFileMetadata(

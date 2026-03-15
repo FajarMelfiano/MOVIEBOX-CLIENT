@@ -406,3 +406,248 @@ async def test_subtitle_fetch_preserves_external_error_status(monkeypatch: pytes
         loaded = await app._handle_subtitle_fetch(silent=False)
         assert loaded is False
         assert any("External subtitle fetch failed" in status for status in captured_status)
+
+
+@pytest.mark.asyncio
+async def test_anime_selection_uses_provider_episode_map():
+    app = InteractiveTextualApp()
+
+    anime_item = StremioSearchItem(
+        subjectId="anime:samehadaku:one-piece",
+        subjectType=SubjectType.ANIME,
+        title="One Piece",
+        description="",
+        releaseDate=date(1999, 1, 1),
+        imdbRatingValue=0.0,
+        genre=["Action"],
+        imdbId="anime:samehadaku:one-piece",
+        releaseInfo="1999",
+        page_url="https://samehadaku.ac/anime/one-piece/",
+        stremioType="series",
+        metadata={
+            "anime_payload": {
+                "provider_name": "samehadaku",
+                "status": "Ongoing",
+                "episode_count": 2,
+                "season_map": {1: 2},
+                "content_subject_type": SubjectType.TV_SERIES,
+                "genres": ["Action"],
+            }
+        },
+    )
+
+    async with app.run_test() as _pilot:
+        await app._select_item(anime_item)
+
+        assert app.query_one("#provider_select", Select).value == "samehadaku"
+        assert not app.query_one("#source_episode_row").has_class("hidden")
+        assert app.query_one("#season_select", Select).has_class("hidden")
+        assert app.query_one("#episode_select", Select).value == "1"
+        assert app._read_season_episode() == (1, 1)
+        assert app.query_one("#subtitle_language_input", Input).value == "Indonesian"
+
+
+@pytest.mark.asyncio
+async def test_anime_selection_prefers_item_provider_in_source_select():
+    app = InteractiveTextualApp()
+
+    anime_item = StremioSearchItem(
+        subjectId="anime:oplovers:jujutsu-kaisen",
+        subjectType=SubjectType.ANIME,
+        title="Jujutsu Kaisen",
+        description="",
+        releaseDate=date(2020, 1, 1),
+        imdbRatingValue=0.0,
+        genre=["Action"],
+        imdbId="anime:oplovers:jujutsu-kaisen",
+        releaseInfo="2020",
+        page_url="https://coba.oploverz.ltd/series/jujutsu-kaisen",
+        stremioType="series",
+        metadata={
+            "anime_payload": {
+                "provider_name": "oplovers",
+                "episode_count": 24,
+                "season_map": {1: 24},
+                "content_subject_type": SubjectType.TV_SERIES,
+            }
+        },
+    )
+
+    async with app.run_test() as _pilot:
+        await app._select_item(anime_item)
+        assert app.query_one("#provider_select", Select).value == "oplovers"
+
+
+
+@pytest.mark.asyncio
+async def test_provider_change_clears_stale_anime_streams(monkeypatch: pytest.MonkeyPatch):
+    app = InteractiveTextualApp()
+
+    async def _fake_load_trending(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(app, '_load_trending', _fake_load_trending)
+
+    anime_item = StremioSearchItem(
+        subjectId="anime:oplovers:jujutsu-kaisen",
+        subjectType=SubjectType.ANIME,
+        title="Jujutsu Kaisen",
+        description="",
+        releaseDate=date(2020, 1, 1),
+        imdbRatingValue=0.0,
+        genre=["Action"],
+        imdbId="anime:oplovers:jujutsu-kaisen",
+        releaseInfo="2020",
+        page_url="https://coba.oploverz.ltd/series/jujutsu-kaisen",
+        stremioType="series",
+        metadata={
+            "anime_payload": {
+                "provider_name": "oplovers",
+                "episode_count": 24,
+                "season_map": {1: 24},
+                "content_subject_type": SubjectType.TV_SERIES,
+            }
+        },
+    )
+
+    async with app.run_test() as _pilot:
+        await app._select_item(anime_item)
+        app.resolved_streams = [
+            SimpleNamespace(
+                url="https://example.com/video.mp4",
+                source="oplovers",
+                quality="1080p",
+                headers={},
+            )
+        ]
+        app.query_one("#streams_table", DataTable).add_row("1", "oplovers", "1080p", "-", "no", "https://example.com/video.mp4")
+
+        app.query_one("#provider_select", Select).value = "otakudesu"
+        await _pilot.pause()
+
+        assert app.resolved_streams == []
+        assert app.query_one("#streams_table", DataTable).row_count == 0
+
+
+@pytest.mark.asyncio
+async def test_anime_external_subtitle_fetch_uses_anime_helper(monkeypatch: pytest.MonkeyPatch):
+    app = InteractiveTextualApp()
+
+    anime_item = StremioSearchItem(
+        subjectId="anime:samehadaku:solo-leveling",
+        subjectType=SubjectType.ANIME,
+        title="Solo Leveling",
+        description="",
+        releaseDate=date(2024, 1, 1),
+        imdbRatingValue=0.0,
+        genre=["Action"],
+        imdbId="anime:samehadaku:solo-leveling",
+        releaseInfo="2024",
+        page_url="https://samehadaku.ac/anime/solo-leveling/",
+        stremioType="series",
+        metadata={
+            "anime_payload": {
+                "provider_name": "samehadaku",
+                "episode_count": 12,
+                "season_map": {1: 12},
+                "content_subject_type": SubjectType.TV_SERIES,
+            }
+        },
+    )
+
+    async with app.run_test() as _pilot:
+        app.selected_item = anime_item
+        app.selected_stream = SimpleNamespace(
+            url="https://example.com/video.mp4",
+            headers={},
+            source="samehadaku",
+            quality="720p",
+            audio="Japanese",
+            audio_tracks=["Japanese"],
+            subtitles=[],
+        )
+        app.season_map = {1: 12}
+        app._setup_episode_selects(selected_season=1, selected_episode=1)
+
+        async def _fake_fetch(item, *, season, episode, sources, preferred_languages):
+            assert item is anime_item
+            assert season == 1
+            assert episode == 1
+            assert sources == ["opensubtitles"]
+            return [
+                SimpleNamespace(
+                    url="https://example.com/anime-id.srt",
+                    language="Indonesian",
+                    label="Anime Indonesian",
+                    source="opensubtitles",
+                )
+            ]
+
+        monkeypatch.setattr("moviebox_api.tui.app.fetch_anime_external_subtitles", _fake_fetch)
+
+        result = await app._fetch_external_subtitles(
+            sources=["opensubtitles"],
+            preferred_language_id="ind",
+        )
+
+        assert len(result) == 1
+        assert result[0].language_id == "ind"
+        assert result[0].source == "opensubtitles"
+
+
+@pytest.mark.asyncio
+async def test_anime_execute_download_uses_episode_prompt(monkeypatch: pytest.MonkeyPatch):
+    app = InteractiveTextualApp()
+
+    anime_item = StremioSearchItem(
+        subjectId="anime:samehadaku:one-piece",
+        subjectType=SubjectType.ANIME,
+        title="One Piece",
+        description="",
+        releaseDate=date(1999, 1, 1),
+        imdbRatingValue=0.0,
+        genre=["Action"],
+        imdbId="anime:samehadaku:one-piece",
+        releaseInfo="1999",
+        page_url="https://samehadaku.ac/anime/one-piece/",
+        stremioType="series",
+        metadata={
+            "anime_payload": {
+                "provider_name": "samehadaku",
+                "episode_count": 2,
+                "season_map": {1: 2},
+                "content_subject_type": SubjectType.TV_SERIES,
+            }
+        },
+    )
+
+    async with app.run_test() as _pilot:
+        app.selected_item = anime_item
+        app.selected_stream = SimpleNamespace(
+            url="https://example.com/video.mp4",
+            headers={},
+            source="samehadaku",
+            quality="720p",
+            audio="Japanese",
+            audio_tracks=["Japanese"],
+            subtitles=[],
+        )
+        app.season_map = {1: 2}
+        app._setup_episode_selects(selected_season=1, selected_episode=1)
+        app.query_one("#action_select", Select).value = "download"
+
+        prompted: list[bool] = []
+
+        async def _fake_handle_download() -> bool:
+            return True
+
+        async def _fake_confirm(*, default_continue: bool, **_kwargs) -> bool:
+            prompted.append(default_continue)
+            return False
+
+        monkeypatch.setattr(app, "_handle_download", _fake_handle_download)
+        monkeypatch.setattr(app, "_confirm_continue_next_episode", _fake_confirm)
+
+        await app._handle_execute()
+
+        assert prompted == [False]

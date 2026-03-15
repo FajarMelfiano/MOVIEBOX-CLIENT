@@ -11,6 +11,7 @@ import threading
 import time
 import webbrowser
 from dataclasses import dataclass
+from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -109,7 +110,16 @@ body, html {
     background: linear-gradient(to right, #818cf8, #c084fc);
     -webkit-background-clip: text; color: transparent;
 }
-.divider { width: 5px; height: 5px; border-radius: 50%; background: #4b5563; }
+.divider {
+    width: 5px; height: 5px; border-radius: 50%;
+    background: #6b7280;
+    transition: background-color 0.25s ease, box-shadow 0.25s ease, transform 0.25s ease;
+}
+.divider.is-healthy {
+    background: #dc2626;
+    box-shadow: 0 0 0 4px rgba(220, 38, 38, 0.18);
+    transform: scale(1.08);
+}
 .now-playing { font-weight: 500; font-size: 15px; color: #d1d5db; letter-spacing: 0.5px; }
 
 /* Customizing Plyr Overlays */
@@ -122,12 +132,35 @@ document.addEventListener('DOMContentLoaded', () => {
     const video = document.getElementById('video-player');
     const header = document.getElementById('header');
     const wrapper = document.getElementById('wrapper');
+    const divider = document.getElementById('divider');
+    const nowPlaying = document.getElementById('now-playing');
     const urlParams = new URLSearchParams(window.location.search);
     const videoSrc = urlParams.get('video');
+    const mediaTitle = (urlParams.get('title') || '').trim();
+
+    if (mediaTitle) {
+        document.title = mediaTitle;
+        if (nowPlaying) {
+            nowPlaying.textContent = mediaTitle;
+        }
+    }
+
+    const setConnectionState = (healthy) => {
+        if (!divider) return;
+        divider.classList.toggle('is-healthy', Boolean(healthy));
+    };
+
+    const markHealthy = () => setConnectionState(true);
+    const markDegraded = () => setConnectionState(false);
+    markDegraded();
     
     const defaultOptions = {
         keyboard: { focused: false, global: true },
-        controls: ['play-large', 'restart', 'rewind', 'play', 'fast-forward', 'progress', 'current-time', 'duration', 'mute', 'volume', 'captions', 'settings', 'pip', 'airplay', 'fullscreen'],
+        controls: [
+            'play-large', 'restart', 'rewind', 'play', 'fast-forward', 'progress',
+            'current-time', 'duration', 'mute', 'volume', 'captions', 'settings',
+            'pip', 'airplay', 'fullscreen'
+        ],
         settings: ['captions', 'quality', 'speed'],
         disableContextMenu: false,
     };
@@ -139,8 +172,12 @@ document.addEventListener('DOMContentLoaded', () => {
         hls.loadSource(videoSrc);
         hls.attachMedia(video);
         player = new Plyr(video, defaultOptions);
-        hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            markHealthy();
+            video.play().catch(() => {});
+        });
         hls.on(Hls.Events.ERROR, (evt, data) => {
+            markDegraded();
             if(data.fatal) {
                 switch(data.type) {
                     case Hls.ErrorTypes.NETWORK_ERROR: hls.startLoad(); break;
@@ -152,7 +189,10 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
         video.src = videoSrc;
         player = new Plyr(video, defaultOptions);
-        video.addEventListener('loadedmetadata', () => video.play().catch(() => {}));
+        video.addEventListener('loadedmetadata', () => {
+            markHealthy();
+            video.play().catch(() => {});
+        });
     }
 
     let idleTimeout;
@@ -166,7 +206,23 @@ document.addEventListener('DOMContentLoaded', () => {
     
     document.addEventListener('mousemove', resetIdle);
     document.addEventListener('keydown', resetIdle);
-    video.addEventListener('play', resetIdle);
+    window.addEventListener('offline', markDegraded);
+    window.addEventListener('online', () => {
+        if (!video.paused) {
+            markHealthy();
+        }
+    });
+    video.addEventListener('play', () => {
+        markHealthy();
+        resetIdle();
+    });
+    video.addEventListener('playing', markHealthy);
+    video.addEventListener('canplay', markHealthy);
+    video.addEventListener('loadeddata', markHealthy);
+    video.addEventListener('waiting', markDegraded);
+    video.addEventListener('stalled', markDegraded);
+    video.addEventListener('emptied', markDegraded);
+    video.addEventListener('error', markDegraded);
     video.addEventListener('pause', () => header.classList.remove('idle'));
     
     resetIdle();
@@ -190,6 +246,58 @@ def _guess_filename_hint(url: str, fallback: str) -> str:
     if name:
         return _safe_filename_hint(name, fallback)
     return _safe_filename_hint(fallback, fallback)
+
+
+def _web_player_display_title(media_title: str | None) -> str:
+    """Normalize media title for the embedded web player."""
+
+    cleaned = ' '.join(str(media_title or '').split()).strip()
+    return cleaned or 'MOVIEBOX'
+
+
+def _build_web_player_html(*, media_title: str | None, subtitle_urls: list[str]) -> str:
+    """Render the local web player HTML shell."""
+
+    page_title = escape(_web_player_display_title(media_title))
+    now_playing = page_title if page_title != 'MOVIEBOX' else 'Playing External Stream'
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{page_title}</title>
+    <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&display=swap"
+        rel="stylesheet"
+    >
+    <link rel="stylesheet" href="/player/style.css?t={_WEB_PLAYER_TOKEN}" />
+</head>
+<body>
+    <div class="player-wrapper" id="wrapper">
+        <div class="header" id="header">
+            <div class="title-container">
+                <div class="logo">MOVIEBOX</div>
+                <div class="divider" id="divider"></div>
+                <div class="now-playing" id="now-playing">{now_playing}</div>
+            </div>
+        </div>
+        <video id="video-player" crossorigin="anonymous">
+"""
+    for index, subtitle_url in enumerate(subtitle_urls, start=1):
+        default = 'default' if index == 1 else ''
+        html += (
+            f'            <track label="Subtitle {index}" kind="subtitles" '
+            f'srclang="en" src="{escape(subtitle_url, quote=True)}" {default}>\n'
+        )
+    html += f"""        </video>
+    </div>
+    <script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <script src="/player/script.js?t={_WEB_PLAYER_TOKEN}"></script>
+</body>
+</html>"""
+    return html
 
 
 @dataclass(frozen=True, slots=True)
@@ -476,6 +584,34 @@ def _is_m3u8_response(url: str, content_type: str | None) -> bool:
     return "mpegurl" in lowered or "vnd.apple.mpegurl" in lowered
 
 
+def _normalized_passthrough_content_type(url: str, content_type: str | None) -> str | None:
+    """Normalize generic binary responses into a player-friendly media content type."""
+
+    raw_value = str(content_type or '').strip()
+    lowered = raw_value.split(';', maxsplit=1)[0].lower()
+    if lowered and lowered not in {'application/octet-stream', 'binary/octet-stream'}:
+        return raw_value
+
+    path = urlparse(url).path.lower()
+    if path.endswith('.mp4'):
+        return 'video/mp4'
+    if path.endswith('.mkv'):
+        return 'video/x-matroska'
+    if path.endswith('.webm'):
+        return 'video/webm'
+    if path.endswith('.mov'):
+        return 'video/quicktime'
+    if path.endswith('.avi'):
+        return 'video/x-msvideo'
+    if path.endswith('.m4v'):
+        return 'video/x-m4v'
+    if path.endswith('.mpd'):
+        return 'application/dash+xml'
+    if path.endswith('.m3u8'):
+        return 'application/vnd.apple.mpegurl'
+    return raw_value or None
+
+
 def _rewrite_m3u8_playlist(text: str, *, base_url: str, headers: dict[str, str]) -> str:
     rewritten_lines: list[str] = []
 
@@ -563,41 +699,9 @@ class _PlaybackProxyRequestHandler(BaseHTTPRequestHandler):
                     self.wfile.write(payload)
                 return
 
-            video_url = params.get("video", [""])[0]
             subs_urls = params.get("sub", [])
-            
-            html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MOVIEBOX</title>
-    <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/player/style.css?t={_WEB_PLAYER_TOKEN}" />
-</head>
-<body>
-    <div class="player-wrapper" id="wrapper">
-        <div class="header" id="header">
-            <div class="title-container">
-                <div class="logo">MOVIEBOX</div>
-                <div class="divider"></div>
-                <div class="now-playing">Playing External Stream</div>
-            </div>
-        </div>
-        <video id="video-player" crossorigin="anonymous">
-"""
-            for i, sub in enumerate(subs_urls):
-                default = "default" if i == 0 else ""
-                html += f'            <track label="Subtitle {i+1}" kind="subtitles" srclang="en" src="{sub}" {default}>\n'
-            
-            html += f"""        </video>
-    </div>
-    <script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-    <script src="/player/script.js?t={_WEB_PLAYER_TOKEN}"></script>
-</body>
-</html>"""
+            media_title = params.get("title", [""])[0]
+            html = _build_web_player_html(media_title=media_title, subtitle_urls=subs_urls)
             payload = html.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
@@ -687,8 +791,13 @@ class _PlaybackProxyRequestHandler(BaseHTTPRequestHandler):
                     return
 
                 self.send_response(response.status_code)
+                normalized_content_type = _normalized_passthrough_content_type(
+                    str(response.url),
+                    response.headers.get("Content-Type"),
+                )
+                if normalized_content_type:
+                    self.send_header("Content-Type", normalized_content_type)
                 passthrough = [
-                    "Content-Type",
                     "Content-Length",
                     "Content-Range",
                     "Accept-Ranges",
@@ -1131,6 +1240,8 @@ def play_stream(
                 else:
                     converted_subtitles.append(sub_url)
             query = {"video": proxied_stream, "t": _WEB_PLAYER_TOKEN}
+            if media_title:
+                query["title"] = media_title
             if converted_subtitles:
                 query["sub"] = converted_subtitles
             player_url = f"http://127.0.0.1:{port}/player?{urlencode(query, doseq=True)}"
