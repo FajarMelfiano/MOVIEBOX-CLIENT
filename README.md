@@ -226,5 +226,4 @@ Manual completion and auto-venv setup instructions are documented in `INSTALL.md
 ```
 
 ## License
-
-Unlicense. See `LICENSE`.
+See `LICENSE`.
