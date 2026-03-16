@@ -1,5 +1,6 @@
 import pytest
 
+from moviebox_api.providers.cloudstream_provider import CloudstreamProvider
 from moviebox_api.providers.registry import (
     DEFAULT_PROVIDER,
     ENVIRONMENT_PROVIDER_KEY,
@@ -20,6 +21,7 @@ def test_normalize_provider_name_defaults_to_moviebox():
         ("moviebox", "moviebox"),
         ("YFLIX", "yflix"),
         ("Vega", "vega"),
+        ("cloudstream", "cloudstream"),
         ("samehadaku", "samehadaku"),
         ("OPLOVERS", "oplovers"),
         ("Otakudesu", "otakudesu"),
@@ -56,3 +58,9 @@ def test_get_provider_reads_environment(monkeypatch: pytest.MonkeyPatch):
     provider = get_provider()
     assert isinstance(provider, VegaProvider)
     assert provider.selected_provider_value == "autoEmbed"
+
+
+
+def test_get_provider_supports_cloudstream():
+    provider = get_provider("cloudstream")
+    assert isinstance(provider, CloudstreamProvider)

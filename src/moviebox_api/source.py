@@ -1,8 +1,32 @@
 """High-level helpers for multi-provider stream resolution."""
 
+from difflib import SequenceMatcher
+
 from moviebox_api.constants import SubjectType
 from moviebox_api.providers import SUPPORTED_ANIME_PROVIDERS, get_provider, normalize_provider_name
 from moviebox_api.providers.models import ProviderSearchResult, ProviderStream, ProviderSubtitle
+
+
+def _normalized_title_key(value: str) -> str:
+    return ''.join(character for character in value.lower() if character.isalnum())
+
+
+def _cross_subject_fallback_allowed(title: str, item: ProviderSearchResult) -> bool:
+    requested_key = _normalized_title_key(title)
+    candidate_key = _normalized_title_key(item.title)
+    if not requested_key or not candidate_key:
+        return False
+    if requested_key == candidate_key:
+        return True
+    return SequenceMatcher(None, requested_key, candidate_key).ratio() >= 0.97
+
+
+def _alternate_subject_type(subject_type: SubjectType) -> SubjectType | None:
+    if subject_type == SubjectType.MOVIES:
+        return SubjectType.TV_SERIES
+    if subject_type == SubjectType.TV_SERIES:
+        return SubjectType.MOVIES
+    return None
 
 
 class SourceResolver:
@@ -65,6 +89,37 @@ class SourceResolver:
                 subject_type=subject_type,
                 year=year,
             )
+
+        normalized_provider_name = ''
+        raw_provider_name = self.provider_name or getattr(self.provider, 'name', '')
+        if raw_provider_name:
+            try:
+                normalized_provider_name = normalize_provider_name(raw_provider_name)
+            except ValueError:
+                normalized_provider_name = ''
+
+        if item is None and normalized_provider_name == 'cloudstream':
+            alternate_subject_type = _alternate_subject_type(subject_type)
+            fallback_years: list[int | None] = []
+            if year is not None:
+                fallback_years.append(year)
+            fallback_years.append(None)
+
+            if alternate_subject_type is not None:
+                for fallback_year in fallback_years:
+                    alternate_item = await self.provider.search_best_match(
+                        query=title,
+                        subject_type=alternate_subject_type,
+                        year=fallback_year,
+                    )
+                    if alternate_item is None:
+                        continue
+                    if not _cross_subject_fallback_allowed(title, alternate_item):
+                        continue
+                    alternate_item.payload['resolved_subject_fallback_from'] = subject_type.name
+                    item = alternate_item
+                    break
+
         if item is None:
             return (None, [], [])
 

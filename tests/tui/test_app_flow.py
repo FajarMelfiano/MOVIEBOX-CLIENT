@@ -5,8 +5,10 @@ import pytest
 from textual.widgets import ContentSwitcher, DataTable, Input, Select, Static
 
 from moviebox_api.constants import SubjectType
+from moviebox_api.providers.models import ProviderSearchResult, ProviderStream
 from moviebox_api.stremio.catalog import StremioSearchItem
 from moviebox_api.tui.app import ContinuePromptScreen, InteractiveTextualApp, SubtitleChoice
+from moviebox_api.tui.playback import WEB_PLAYER_TARGET
 
 
 @pytest.mark.asyncio
@@ -651,3 +653,138 @@ async def test_anime_execute_download_uses_episode_prompt(monkeypatch: pytest.Mo
         await app._handle_execute()
 
         assert prompted == [False]
+
+
+@pytest.mark.asyncio
+async def test_resolve_streams_syncs_tui_item_when_provider_matches_series(monkeypatch: pytest.MonkeyPatch):
+    app = InteractiveTextualApp()
+
+    selected_movie = StremioSearchItem(
+        subjectId="tt1468737",
+        subjectType=SubjectType.MOVIES,
+        title="Stranger Things",
+        description="",
+        releaseDate=date(2010, 1, 1),
+        imdbRatingValue=0.0,
+        genre=["Drama"],
+        imdbId="tt1468737",
+        releaseInfo="2010",
+        page_url="https://www.imdb.com/title/tt1468737/",
+        stremioType="movie",
+        metadata={},
+    )
+    resolved_provider_item = ProviderSearchResult(
+        id="netflix:80057281",
+        title="Stranger Things",
+        page_url="https://net52.cc/post/80057281",
+        subject_type=SubjectType.TV_SERIES,
+        year=2016,
+    )
+    matched_series = StremioSearchItem(
+        subjectId="tt4574334",
+        subjectType=SubjectType.TV_SERIES,
+        title="Stranger Things",
+        description="",
+        releaseDate=date(2016, 1, 1),
+        imdbRatingValue=8.7,
+        genre=["Sci-Fi"],
+        imdbId="tt4574334",
+        releaseInfo="2016",
+        page_url="https://www.imdb.com/title/tt4574334/",
+        stremioType="series",
+        metadata={},
+    )
+
+    class _FakeResolver:
+        def __init__(self, provider_name: str | None = None):
+            self.provider_name = provider_name
+
+        async def resolve(self, **_kwargs):
+            return (
+                resolved_provider_item,
+                [ProviderStream(url="https://example.com/stream.m3u8", source="cloudstream")],
+                [],
+            )
+
+    async def _fake_fetch_cinemeta_meta(_item):
+        return {"videos": [{"season": 1, "episode": 8}]}
+
+    async with app.run_test() as _pilot:
+        app.selected_item = selected_movie
+        app.query_one("#provider_select", Select).value = "cloudstream"
+
+        async def _fake_search_cinemeta_catalog(*_args, **_kwargs):
+            return [matched_series]
+
+        monkeypatch.setattr("moviebox_api.tui.app.SourceResolver", _FakeResolver)
+        monkeypatch.setattr("moviebox_api.tui.app.search_cinemeta_catalog", _fake_search_cinemeta_catalog)
+        monkeypatch.setattr("moviebox_api.tui.app.fetch_cinemeta_meta", _fake_fetch_cinemeta_meta)
+
+        resolved = await app._handle_resolve_streams(silent=True)
+
+        assert resolved is True
+        assert app.selected_item is not None
+        assert app.selected_item.subjectType == SubjectType.TV_SERIES
+        assert app.selected_item.imdbId == "tt4574334"
+        assert not app.query_one("#source_episode_row").has_class("hidden")
+        assert app.query_one("#episode_select", Select).value == "1"
+        assert app.query_one("#streams_table", DataTable).row_count == 1
+
+
+@pytest.mark.asyncio
+async def test_web_player_selection_disables_browser_fallback_in_tui(monkeypatch: pytest.MonkeyPatch):
+    app = InteractiveTextualApp()
+
+    movie_item = StremioSearchItem(
+        subjectId="tt0816692",
+        subjectType=SubjectType.MOVIES,
+        title="Interstellar",
+        description="",
+        releaseDate=date(2014, 1, 1),
+        imdbRatingValue=8.7,
+        genre=["Sci-Fi"],
+        imdbId="tt0816692",
+        releaseInfo="2014",
+        page_url="https://www.imdb.com/title/tt0816692/",
+        stremioType="movie",
+        metadata={},
+    )
+
+    captured = {'allow_browser_fallback': None}
+
+    def _fake_play_stream(
+        stream_url,
+        headers,
+        subtitle_paths,
+        *,
+        subtitle_urls=None,
+        target_id=None,
+        media_title=None,
+        allow_browser_fallback=True,
+    ):
+        captured['allow_browser_fallback'] = allow_browser_fallback
+        return SimpleNamespace(success=False, message='web player preflight failed', target_id=target_id)
+
+    async with app.run_test() as _pilot:
+        app.selected_item = movie_item
+        app.selected_stream = SimpleNamespace(
+            url='https://example.com/master.m3u8',
+            headers={},
+            source='provider',
+            quality='1080p',
+            audio='English',
+            audio_tracks=['English'],
+            subtitles=[],
+        )
+        app.query_one('#player_select', Select).value = WEB_PLAYER_TARGET
+
+        async def _fake_collect_candidates(_stream):
+            return [app.selected_stream]
+
+        monkeypatch.setattr('moviebox_api.tui.app.play_stream', _fake_play_stream)
+        monkeypatch.setattr(app, '_collect_playback_stream_candidates', _fake_collect_candidates)
+
+        result = await app._handle_play()
+
+        assert result is False
+        assert captured['allow_browser_fallback'] is False

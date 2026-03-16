@@ -3,6 +3,7 @@
 import os
 
 from moviebox_api.providers.base import BaseStreamProvider
+from moviebox_api.providers.cloudstream_provider import CloudstreamProvider
 from moviebox_api.providers.moviebox_provider import MovieboxProvider
 from moviebox_api.providers.oplovers_provider import OploversProvider
 from moviebox_api.providers.otakudesu_provider import OtakudesuProvider
@@ -12,7 +13,7 @@ from moviebox_api.providers.yflix_provider import YflixProvider
 
 ENVIRONMENT_PROVIDER_KEY = "MOVIEBOX_PROVIDER"
 DEFAULT_PROVIDER = "moviebox"
-SUPPORTED_MEDIA_PROVIDERS = ("moviebox", "yflix", "vega")
+SUPPORTED_MEDIA_PROVIDERS = ("moviebox", "yflix", "vega", "cloudstream")
 SUPPORTED_ANIME_PROVIDERS = ("samehadaku", "oplovers", "otakudesu")
 SUPPORTED_PROVIDERS = SUPPORTED_MEDIA_PROVIDERS + SUPPORTED_ANIME_PROVIDERS
 
@@ -63,6 +64,8 @@ def get_provider(name: str | None = None) -> BaseStreamProvider:
         return YflixProvider()
     if selected == "vega":
         return VegaProvider()
+    if selected == "cloudstream":
+        return CloudstreamProvider()
     if selected == "samehadaku":
         return SamehadakuProvider()
     if selected == "oplovers":

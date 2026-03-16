@@ -662,53 +662,83 @@ class _PlaybackProxyRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         self._handle_proxy_request(send_body=True)
 
+    def _send_payload_response(
+        self,
+        status_code: int,
+        payload: bytes = b"",
+        *,
+        content_type: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+        send_body: bool,
+    ) -> None:
+        self.send_response(status_code)
+        if content_type:
+            self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        if extra_headers:
+            for header_name, header_value in extra_headers.items():
+                self.send_header(header_name, header_value)
+        self.end_headers()
+        if send_body and payload:
+            self.wfile.write(payload)
+
+    def _send_plain_error(self, status_code: int, message: str, *, send_body: bool) -> None:
+        payload = message.encode("utf-8")
+        self._send_payload_response(
+            status_code,
+            payload,
+            content_type="text/plain; charset=utf-8",
+            send_body=send_body,
+        )
+
     def _handle_proxy_request(self, *, send_body: bool) -> None:
         path = self.path.split("?", 1)[0]
         parts = path.split("/")
-        
+
+        if path == "/favicon.ico":
+            self._send_payload_response(204, b"", send_body=send_body)
+            return
+
         if len(parts) >= 2 and parts[1] == "player":
             from urllib.parse import parse_qs
             query_string = self.path.split("?", 1)[1] if "?" in self.path else ""
             params = parse_qs(query_string)
             token = params.get("t", [""])[0]
-            
+
             if token != _WEB_PLAYER_TOKEN:
-                self.send_response(403)
-                self.end_headers()
-                if send_body:
-                    self.wfile.write(b"Forbidden")
+                self._send_plain_error(403, "Forbidden", send_body=send_body)
                 return
-            
+
             if len(parts) >= 3 and parts[2] == "style.css":
                 payload = _WEB_PLAYER_CSS.encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "text/css")
-                self.send_header("Content-Length", str(len(payload)))
-                self.end_headers()
-                if send_body:
-                    self.wfile.write(payload)
+                self._send_payload_response(
+                    200,
+                    payload,
+                    content_type="text/css",
+                    send_body=send_body,
+                )
                 return
-                
+
             if len(parts) >= 3 and parts[2] == "script.js":
                 payload = _WEB_PLAYER_JS.encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "application/javascript")
-                self.send_header("Content-Length", str(len(payload)))
-                self.end_headers()
-                if send_body:
-                    self.wfile.write(payload)
+                self._send_payload_response(
+                    200,
+                    payload,
+                    content_type="application/javascript",
+                    send_body=send_body,
+                )
                 return
 
             subs_urls = params.get("sub", [])
             media_title = params.get("title", [""])[0]
             html = _build_web_player_html(media_title=media_title, subtitle_urls=subs_urls)
             payload = html.encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            if send_body:
-                self.wfile.write(payload)
+            self._send_payload_response(
+                200,
+                payload,
+                content_type="text/html",
+                send_body=send_body,
+            )
             return
 
         if len(parts) >= 2 and parts[1] == "convert" and len(parts) >= 3 and parts[2] == "vtt":
@@ -717,49 +747,44 @@ class _PlaybackProxyRequestHandler(BaseHTTPRequestHandler):
             cparams = parse_qs(qs)
             ctoken = cparams.get("t", [""])[0]
             if ctoken != _WEB_PLAYER_TOKEN:
-                self.send_response(403)
-                self.end_headers()
+                self._send_plain_error(403, "Forbidden", send_body=send_body)
                 return
             route_token = cparams.get("route", [""])[0]
             route = _resolve_proxy_route(route_token)
             if route is None:
-                self.send_response(404)
-                self.end_headers()
+                self._send_plain_error(404, "Route not found", send_body=send_body)
                 return
             client = _ensure_proxy_http_client()
             try:
                 response = client.get(route.url, headers=route.headers)
+                response.raise_for_status()
                 srt_text = response.text
-            except Exception:
-                self.send_response(502)
-                self.end_headers()
+            except Exception as exc:
+                self._send_plain_error(502, f"Subtitle conversion failed: {exc}", send_body=send_body)
                 return
             vtt_text = _srt_to_vtt(srt_text)
             payload = vtt_text.encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/vtt; charset=utf-8")
-            self.send_header("Content-Length", str(len(payload)))
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            if send_body:
-                self.wfile.write(payload)
+            self._send_payload_response(
+                200,
+                payload,
+                content_type="text/vtt; charset=utf-8",
+                extra_headers={"Access-Control-Allow-Origin": "*"},
+                send_body=send_body,
+            )
             return
 
         if len(parts) < 3 or parts[1] != "route":
-            self.send_response(404)
-            self.end_headers()
+            self._send_plain_error(404, "Not found", send_body=send_body)
             return
 
         token = parts[2].strip()
         if not token:
-            self.send_response(404)
-            self.end_headers()
+            self._send_plain_error(404, "Missing route token", send_body=send_body)
             return
 
         route = _resolve_proxy_route(token)
         if route is None:
-            self.send_response(404)
-            self.end_headers()
+            self._send_plain_error(404, "Route not found", send_body=send_body)
             return
 
         request_headers = dict(route.headers)
@@ -771,9 +796,11 @@ class _PlaybackProxyRequestHandler(BaseHTTPRequestHandler):
         try:
             method = "GET" if send_body else "HEAD"
             with client.stream(method, route.url, headers=request_headers) as response:
+                response.raise_for_status()
                 is_playlist = _is_m3u8_response(route.url, response.headers.get("Content-Type"))
                 if send_body and is_playlist:
-                    playlist_text = response.text
+                    playlist_bytes = response.read()
+                    playlist_text = playlist_bytes.decode("utf-8", errors="replace")
                     rewritten = _rewrite_m3u8_playlist(
                         playlist_text,
                         base_url=str(response.url),
@@ -781,13 +808,16 @@ class _PlaybackProxyRequestHandler(BaseHTTPRequestHandler):
                     )
                     payload = rewritten.encode("utf-8")
 
-                    self.send_response(response.status_code)
-                    self.send_header("Content-Type", "application/vnd.apple.mpegurl")
-                    self.send_header("Content-Length", str(len(payload)))
-                    self.send_header("Cache-Control", "no-store")
-                    self.send_header("Access-Control-Allow-Origin", "*")
-                    self.end_headers()
-                    self.wfile.write(payload)
+                    self._send_payload_response(
+                        response.status_code,
+                        payload,
+                        content_type="application/vnd.apple.mpegurl",
+                        extra_headers={
+                            "Cache-Control": "no-store",
+                            "Access-Control-Allow-Origin": "*",
+                        },
+                        send_body=send_body,
+                    )
                     return
 
                 self.send_response(response.status_code)
@@ -816,9 +846,8 @@ class _PlaybackProxyRequestHandler(BaseHTTPRequestHandler):
 
                 for chunk in response.iter_bytes(chunk_size=64 * 1024):
                     self.wfile.write(chunk)
-        except Exception:
-            self.send_response(502)
-            self.end_headers()
+        except Exception as exc:
+            self._send_plain_error(502, f"Proxy request failed: {exc}", send_body=send_body)
 
 
 def _shutdown_proxy_server() -> None:
@@ -1092,6 +1121,44 @@ def _srt_to_vtt(srt: str) -> str:
     return "\n".join(result)
 
 
+
+
+def _extract_first_hls_child_url(playlist_text: str) -> str | None:
+    for line in playlist_text.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith('#'):
+            return stripped
+    return None
+
+
+def _probe_web_player_hls_proxy(stream_url: str) -> tuple[bool, str]:
+    if '.m3u8' not in stream_url.lower():
+        return True, 'ok'
+
+    try:
+        with httpx.Client(follow_redirects=True, timeout=httpx.Timeout(10.0, read=10.0)) as client:
+            master_response = client.get(stream_url)
+            if master_response.status_code != 200:
+                return False, f'master playlist returned HTTP {master_response.status_code}'
+
+            first_child_url = _extract_first_hls_child_url(master_response.text)
+            if not first_child_url:
+                return True, 'ok'
+
+            child_response = client.get(first_child_url)
+            if child_response.status_code != 200:
+                return False, f'child playlist returned HTTP {child_response.status_code}'
+
+            content_type = str(child_response.headers.get('Content-Type') or '').lower()
+            if 'text/plain' in content_type and 'proxy request failed' in child_response.text.lower():
+                summary = child_response.text.strip().splitlines()[0]
+                return False, summary
+    except Exception as exc:
+        return False, str(exc)
+
+    return True, 'ok'
+
+
 def _open_url_fallback(url: str) -> bool:
     # On Termux/Android, prefer `am start` (Activity Manager) which reliably
     # opens URLs in the default browser registered via Android intents.
@@ -1222,35 +1289,46 @@ def play_stream(
             proxied_stream, proxied_subtitles = _prepare_android_proxy_urls(
                 stream_url, headers, subtitle_urls
             )
-            # Convert any .srt subtitle to .vtt via the proxy converter endpoint
-            port = _ensure_proxy_server()
-            converted_subtitles = []
-            for sub_url in proxied_subtitles:
-                parsed_sub = urlparse(sub_url)
-                # Check if it's a local proxy route for an SRT file
-                sub_path = parsed_sub.path.lower()
-                sub_parts = parsed_sub.path.split("/")
-                if sub_path.endswith(".srt") and len(sub_parts) >= 3 and sub_parts[1] == "route":
-                    route_token = sub_parts[2]
-                    vtt_url = (
-                        f"http://127.0.0.1:{port}/convert/vtt"
-                        f"?route={route_token}&t={_WEB_PLAYER_TOKEN}"
-                    )
-                    converted_subtitles.append(vtt_url)
-                else:
-                    converted_subtitles.append(sub_url)
-            query = {"video": proxied_stream, "t": _WEB_PLAYER_TOKEN}
-            if media_title:
-                query["title"] = media_title
-            if converted_subtitles:
-                query["sub"] = converted_subtitles
-            player_url = f"http://127.0.0.1:{port}/player?{urlencode(query, doseq=True)}"
-            opened = _open_url_fallback(player_url)
-            result = PlaybackResult(
-                success=opened,
-                message="Opened Web Player" if opened else "Failed to open Web Player",
-                target_id=resolved_target,
-            )
+            preflight_ok, preflight_detail = _probe_web_player_hls_proxy(proxied_stream)
+            if not preflight_ok:
+                result = PlaybackResult(
+                    success=False,
+                    message=(
+                        "Web Player cannot proxy this HLS stream. "
+                        f"Upstream playlist check failed: {preflight_detail}"
+                    ),
+                    target_id=resolved_target,
+                )
+            else:
+                # Convert any .srt subtitle to .vtt via the proxy converter endpoint
+                port = _ensure_proxy_server()
+                converted_subtitles = []
+                for sub_url in proxied_subtitles:
+                    parsed_sub = urlparse(sub_url)
+                    # Check if it's a local proxy route for an SRT file
+                    sub_path = parsed_sub.path.lower()
+                    sub_parts = parsed_sub.path.split("/")
+                    if sub_path.endswith(".srt") and len(sub_parts) >= 3 and sub_parts[1] == "route":
+                        route_token = sub_parts[2]
+                        vtt_url = (
+                            f"http://127.0.0.1:{port}/convert/vtt"
+                            f"?route={route_token}&t={_WEB_PLAYER_TOKEN}"
+                        )
+                        converted_subtitles.append(vtt_url)
+                    else:
+                        converted_subtitles.append(sub_url)
+                query = {"video": proxied_stream, "t": _WEB_PLAYER_TOKEN}
+                if media_title:
+                    query["title"] = media_title
+                if converted_subtitles:
+                    query["sub"] = converted_subtitles
+                player_url = f"http://127.0.0.1:{port}/player?{urlencode(query, doseq=True)}"
+                opened = _open_url_fallback(player_url)
+                result = PlaybackResult(
+                    success=opened,
+                    message="Opened Web Player" if opened else "Failed to open Web Player",
+                    target_id=resolved_target,
+                )
         else:
             opened = _open_url_fallback(stream_url)
             result = PlaybackResult(

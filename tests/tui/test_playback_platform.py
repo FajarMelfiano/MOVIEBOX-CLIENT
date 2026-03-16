@@ -1,3 +1,4 @@
+import httpx
 import pytest
 
 from moviebox_api.tui import playback
@@ -164,6 +165,7 @@ def test_play_stream_web_player_includes_media_title_in_query(monkeypatch: pytes
         lambda *_args, **_kwargs: ('http://127.0.0.1:9999/route/abc.m3u8', []),
     )
     monkeypatch.setattr(playback, '_ensure_proxy_server', lambda: 9999)
+    monkeypatch.setattr(playback, '_probe_web_player_hls_proxy', lambda _url: (True, 'ok'))
 
     opened = {'url': ''}
 
@@ -197,3 +199,123 @@ def test_normalized_passthrough_content_type_keeps_specific_header():
         'https://cdn.example/video.mp4?token=123',
         'video/mp4',
     ) == 'video/mp4'
+
+
+def test_local_proxy_rewrites_hls_playlist(monkeypatch: pytest.MonkeyPatch):
+    playback._shutdown_proxy_server()
+    playback._close_proxy_http_client()
+
+    playlist = """#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-KEY:METHOD=AES-128,URI="keys/key.bin"
+#EXTINF:4.0,
+segment0.ts
+"""
+
+    def _mock_handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == 'https://origin.example/master.m3u8'
+        return httpx.Response(
+            200,
+            text=playlist,
+            headers={'Content-Type': 'application/vnd.apple.mpegurl'},
+        )
+
+    mock_client = httpx.Client(transport=httpx.MockTransport(_mock_handler), follow_redirects=True)
+    monkeypatch.setattr(playback, '_PROXY_HTTP_CLIENT', mock_client)
+
+    route_url = playback._register_proxy_route(
+        'https://origin.example/master.m3u8',
+        {'Referer': 'https://origin.example'},
+        filename_hint='master.m3u8',
+    )
+
+    with httpx.Client(timeout=5.0) as client:
+        response = client.get(route_url)
+
+    assert response.status_code == 200
+    assert response.headers['Content-Type'] == 'application/vnd.apple.mpegurl'
+    assert 'http://127.0.0.1:' in response.text
+    assert '\nsegment0.ts' not in response.text
+    assert 'URI="keys/key.bin"' not in response.text
+
+    playback._shutdown_proxy_server()
+    playback._close_proxy_http_client()
+
+
+def test_local_proxy_serves_empty_favicon():
+    playback._shutdown_proxy_server()
+    port = playback._ensure_proxy_server()
+
+    with httpx.Client(timeout=5.0) as client:
+        response = client.get(f'http://127.0.0.1:{port}/favicon.ico')
+
+    assert response.status_code == 204
+    assert response.content == b''
+
+    playback._shutdown_proxy_server()
+
+
+def test_probe_web_player_hls_proxy_detects_child_playlist_failure(monkeypatch: pytest.MonkeyPatch):
+    responses = {
+        'http://127.0.0.1:9999/route/master/master.m3u8': httpx.Response(
+            200,
+            text='#EXTM3U\nhttp://127.0.0.1:9999/route/child/720p.m3u8\n',
+            headers={'Content-Type': 'application/vnd.apple.mpegurl'},
+        ),
+        'http://127.0.0.1:9999/route/child/720p.m3u8': httpx.Response(
+            502,
+            text='Proxy request failed: Server disconnected without sending a response.',
+            headers={'Content-Type': 'text/plain; charset=utf-8'},
+        ),
+    }
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return responses[str(request.url)]
+
+    mock_client = httpx.Client(transport=httpx.MockTransport(_handler), follow_redirects=True)
+    monkeypatch.setattr(playback.httpx, 'Client', lambda *args, **kwargs: mock_client)
+
+    ok, detail = playback._probe_web_player_hls_proxy('http://127.0.0.1:9999/route/master/master.m3u8')
+
+    assert ok is False
+    assert 'HTTP 502' in detail
+
+
+def test_play_stream_web_player_rejects_unproxyable_hls(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv('TERMUX_VERSION', raising=False)
+    monkeypatch.setattr(
+        playback,
+        'resolve_playback_attempt_order',
+        lambda _target: [playback.WEB_PLAYER_TARGET],
+    )
+    monkeypatch.setattr(
+        playback,
+        '_prepare_android_proxy_urls',
+        lambda *_args, **_kwargs: ('http://127.0.0.1:9999/route/master/master.m3u8', []),
+    )
+    monkeypatch.setattr(
+        playback,
+        '_probe_web_player_hls_proxy',
+        lambda _url: (False, 'child playlist returned HTTP 502'),
+    )
+
+    opened = {'called': False}
+
+    def _fake_open_url(_url: str) -> bool:
+        opened['called'] = True
+        return True
+
+    monkeypatch.setattr(playback, '_open_url_fallback', _fake_open_url)
+
+    result = playback.play_stream(
+        'https://example.com/master.m3u8',
+        {'Referer': 'https://example.com'},
+        [],
+        target_id=playback.WEB_PLAYER_TARGET,
+        media_title='Stranger Things',
+        allow_browser_fallback=False,
+    )
+
+    assert result.success is False
+    assert 'Web Player cannot proxy this HLS stream' in result.message
+    assert opened['called'] is False

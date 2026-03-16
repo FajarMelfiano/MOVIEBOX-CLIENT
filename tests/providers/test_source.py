@@ -38,6 +38,34 @@ class _FakeProvider:
         return self._subtitles
 
 
+
+
+class _FakeCloudstreamProvider(_FakeProvider):
+    def __init__(
+        self,
+        movie_item: ProviderSearchResult | None,
+        series_item: ProviderSearchResult | None,
+        streams: list[ProviderStream],
+        subtitles: list[ProviderSubtitle],
+    ):
+        super().__init__(item=movie_item, streams=streams, subtitles=subtitles)
+        self._movie_item = movie_item
+        self._series_item = series_item
+        self.search_calls: list[tuple[SubjectType, int | None]] = []
+
+    async def search_best_match(self, query: str, subject_type: SubjectType, *, year: int | None = None):
+        self.search_calls.append((subject_type, year))
+        if subject_type == SubjectType.MOVIES:
+            return self._movie_item
+        if subject_type == SubjectType.TV_SERIES:
+            if self._series_item is None:
+                return None
+            if year is None or year == self._series_item.year:
+                return self._series_item
+            return None
+        return None
+
+
 class _FakeProviderWithIdBuilder(_FakeProvider):
     def __init__(
         self,
@@ -188,3 +216,38 @@ async def test_resolve_delegates_anime_subjects_to_anime_helper(monkeypatch):
     assert resolved_item == item
     assert resolved_streams == streams
     assert resolved_subtitles == subtitles
+
+
+@pytest.mark.asyncio
+async def test_cloudstream_resolve_falls_back_to_exact_title_cross_subject_match(monkeypatch):
+    series_item = ProviderSearchResult(
+        id="series-1",
+        title="Stranger Things",
+        page_url="https://example.com/stranger-things",
+        subject_type=SubjectType.TV_SERIES,
+        year=2016,
+    )
+    streams = [ProviderStream(url="https://example.com/stream.m3u8", source="cloudstream")]
+    fake_provider = _FakeCloudstreamProvider(
+        movie_item=None,
+        series_item=series_item,
+        streams=streams,
+        subtitles=[],
+    )
+    monkeypatch.setattr("moviebox_api.source.get_provider", lambda _name=None: fake_provider)
+
+    resolver = SourceResolver("cloudstream")
+    item, resolved_streams, _ = await resolver.resolve(
+        "Stranger Things",
+        SubjectType.MOVIES,
+        year=2010,
+    )
+
+    assert item == series_item
+    assert resolved_streams == streams
+    assert item.payload["resolved_subject_fallback_from"] == "MOVIES"
+    assert fake_provider.search_calls == [
+        (SubjectType.MOVIES, 2010),
+        (SubjectType.TV_SERIES, 2010),
+        (SubjectType.TV_SERIES, None),
+    ]

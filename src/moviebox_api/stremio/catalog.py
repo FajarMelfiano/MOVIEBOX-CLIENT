@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from difflib import SequenceMatcher
 from typing import Any
 from urllib.parse import quote
 
@@ -174,6 +175,26 @@ def _catalog_types_for_subject(subject_type: SubjectType) -> list[str]:
     return ["movie", "series"]
 
 
+def _normalized_title_key(value: str) -> str:
+    return ''.join(character for character in value.lower() if character.isalnum())
+
+
+def _search_sort_key(query: str, item: StremioSearchItem) -> tuple[int, int, float, float, int, str]:
+    normalized_query = _normalized_title_key(query)
+    normalized_title = _normalized_title_key(item.title)
+    exact_match = int(normalized_query == normalized_title and bool(normalized_query))
+    starts_with_match = int(bool(normalized_query) and normalized_title.startswith(normalized_query))
+    similarity = SequenceMatcher(None, normalized_query, normalized_title).ratio()
+    return (
+        exact_match,
+        starts_with_match,
+        similarity,
+        item.imdbRatingValue,
+        item.year or 0,
+        item.title.lower(),
+    )
+
+
 async def search_cinemeta_catalog(
     query: str,
     subject_type: SubjectType,
@@ -218,14 +239,7 @@ async def search_cinemeta_catalog(
                 seen_ids.add(mapped_item.imdbId)
                 discovered.append(mapped_item)
 
-    discovered.sort(
-        key=lambda item: (
-            item.imdbRatingValue,
-            item.year or 0,
-            item.title.lower(),
-        ),
-        reverse=True,
-    )
+    discovered.sort(key=lambda item: _search_sort_key(cleaned_query, item), reverse=True)
     return discovered[:limit]
 
 

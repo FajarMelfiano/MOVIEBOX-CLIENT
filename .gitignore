@@ -220,3 +220,6 @@ commit-msg*
 *.part
 temp/
 supabase/.temp/
+
+# Trash
+tmp_filmkita_src/

@@ -9,6 +9,7 @@ import shutil
 import tempfile
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -52,6 +53,7 @@ from moviebox_api.providers import (
     SUPPORTED_MEDIA_PROVIDERS,
     normalize_provider_name,
 )
+from moviebox_api.providers.models import ProviderSearchResult
 from moviebox_api.source import SourceResolver
 from moviebox_api.stremio.catalog import (
     StremioSearchItem,
@@ -599,6 +601,114 @@ class InteractiveTextualApp(App[None]):
             return "Anime Series" if semantic_type == SubjectType.TV_SERIES else "Anime Movie"
         return "TV Series" if item.subjectType == SubjectType.TV_SERIES else "Movie"
 
+    @staticmethod
+    def _normalized_title_key(value: str) -> str:
+        return ''.join(character for character in value.lower() if character.isalnum())
+
+    @classmethod
+    def _selected_item_differs_from_provider_item(
+        cls,
+        selected_item: StremioSearchItem | None,
+        provider_item: ProviderSearchResult,
+    ) -> bool:
+        if selected_item is None:
+            return False
+        if selected_item.subjectType != provider_item.subject_type:
+            return True
+        if cls._normalized_title_key(selected_item.title) != cls._normalized_title_key(provider_item.title):
+            return True
+        return bool(selected_item.year and provider_item.year and selected_item.year != provider_item.year)
+
+    async def _match_cinemeta_item_for_provider_result(
+        self,
+        provider_item: ProviderSearchResult,
+    ) -> StremioSearchItem:
+        try:
+            candidates = await search_cinemeta_catalog(provider_item.title, provider_item.subject_type)
+        except Exception:
+            candidates = []
+
+        target_key = self._normalized_title_key(provider_item.title)
+        exact_candidates: list[StremioSearchItem] = []
+        fallback_candidates: list[StremioSearchItem] = []
+        for candidate in candidates:
+            if candidate.subjectType != provider_item.subject_type:
+                continue
+            if self._normalized_title_key(candidate.title) == target_key:
+                if provider_item.year and candidate.year == provider_item.year:
+                    return candidate
+                exact_candidates.append(candidate)
+                continue
+            fallback_candidates.append(candidate)
+
+        if exact_candidates:
+            return exact_candidates[0]
+        if fallback_candidates:
+            return fallback_candidates[0]
+
+        release_year = provider_item.year if provider_item.year and provider_item.year >= 1900 else 1900
+        release_date = date(release_year, 1, 1)
+        stremio_type = 'series' if provider_item.subject_type == SubjectType.TV_SERIES else 'movie'
+        release_info = str(provider_item.year) if provider_item.year else ''
+        return StremioSearchItem(
+            subjectId=provider_item.id,
+            subjectType=provider_item.subject_type,
+            title=provider_item.title,
+            description='',
+            releaseDate=release_date,
+            imdbRatingValue=0.0,
+            genre=[],
+            imdbId='',
+            tmdbId=None,
+            releaseInfo=release_info,
+            page_url=provider_item.page_url,
+            stremioType=stremio_type,
+            metadata={
+                'provider_payload': dict(provider_item.payload),
+                'provider_result_id': provider_item.id,
+            },
+        )
+
+    async def _sync_selected_item_with_provider_result(
+        self,
+        provider_item: ProviderSearchResult,
+        *,
+        season: int,
+        episode: int,
+    ) -> None:
+        replacement_item = await self._match_cinemeta_item_for_provider_result(provider_item)
+        self.selected_item = replacement_item
+        episode_row = self.query_one('#source_episode_row')
+
+        if replacement_item.subjectType == SubjectType.TV_SERIES:
+            episode_row.remove_class('hidden')
+            self._set_loading(True, 'Refreshing series metadata...')
+            try:
+                if replacement_item.imdbId.startswith('tt'):
+                    meta = await fetch_cinemeta_meta(replacement_item)
+                    self.season_map = extract_series_seasons(meta)
+                else:
+                    self.season_map = {}
+            except Exception:
+                self.season_map = {}
+            finally:
+                self._set_loading(False)
+
+            normalized_season = season if season > 0 else 1
+            normalized_episode = episode if episode > 0 else 1
+            if not self.season_map:
+                self.season_map = {normalized_season: normalized_episode}
+            self._setup_episode_selects(
+                selected_season=normalized_season,
+                selected_episode=normalized_episode,
+            )
+        else:
+            self.season_map = {}
+            episode_row.add_class('hidden')
+
+        self._update_source_item_label()
+        self._update_run_summary()
+
     def action_request_quit(self) -> None:
         self.exit()
 
@@ -1022,7 +1132,31 @@ class InteractiveTextualApp(App[None]):
         finally:
             self._set_loading(False)
 
-        if self.selected_item.subjectType == SubjectType.ANIME and resolved_item is not None:
+        if resolved_item is None:
+            self.selected_provider_name = provider_name
+            self.resolved_streams = []
+            self.resolved_subtitles = []
+            self.selected_stream = None
+            self.selected_subtitles = []
+            self.subtitles_by_language = {}
+            self.subtitle_language_order = []
+            self._clear_subtitle_tables()
+            self.query_one("#streams_table", DataTable).clear(columns=False)
+            if not silent:
+                title = (
+                    self.selected_item.title if self.selected_item is not None else "selected title"
+                )
+                year_text = (
+                    f" ({self.selected_item.year})"
+                    if self.selected_item and self.selected_item.year
+                    else ""
+                )
+                self._set_status(
+                    f"Provider '{provider_name}' has no catalog match for {title}{year_text}."
+                )
+            return False
+
+        if self.selected_item.subjectType == SubjectType.ANIME:
             resolved_provider_name = str(resolved_item.payload.get("provider_name") or provider_name)
             if (
                 self.selected_item.page_url != resolved_item.page_url
@@ -1045,6 +1179,12 @@ class InteractiveTextualApp(App[None]):
             self.selected_provider_name = resolved_provider_name
         else:
             self.selected_provider_name = provider_name
+            if self._selected_item_differs_from_provider_item(self.selected_item, resolved_item):
+                await self._sync_selected_item_with_provider_result(
+                    resolved_item,
+                    season=season,
+                    episode=episode,
+                )
         self.resolved_streams = streams
         self.resolved_subtitles = subtitles
         self.selected_stream = None
@@ -1068,7 +1208,7 @@ class InteractiveTextualApp(App[None]):
 
         if not self.resolved_streams:
             if not silent:
-                self._set_status("No streams found for selected provider.")
+                self._set_status(f"Provider '{provider_name}' matched the title but returned no streams.")
             return False
 
         if not silent:
@@ -1320,7 +1460,7 @@ class InteractiveTextualApp(App[None]):
         selected_stream = self.selected_stream
         selected_target = self._selected_player_target_id()
         stream_candidates = await self._collect_playback_stream_candidates(selected_stream)
-        allow_browser_fallback = True
+        allow_browser_fallback = selected_target != WEB_PLAYER_TARGET
         media_title = self.selected_item.title if self.selected_item else ""
         last_failure = "all stream and player attempts failed"
 

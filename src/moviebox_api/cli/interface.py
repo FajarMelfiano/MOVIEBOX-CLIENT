@@ -790,7 +790,10 @@ def source_streams_command(
         return
 
     if item is None:
-        click.echo("No matching item found.")
+        year_text = f" ({year})" if year else ""
+        click.echo(
+            f"Provider '{selected_provider}' has no catalog match for '{title}{year_text}'."
+        )
         return
 
     if json_output:

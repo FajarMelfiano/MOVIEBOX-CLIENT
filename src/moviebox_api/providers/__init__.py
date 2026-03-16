@@ -1,6 +1,7 @@
 """Stream provider adapters."""
 
 from moviebox_api.providers.base import BaseStreamProvider
+from moviebox_api.providers.cloudstream_provider import CloudstreamProvider
 from moviebox_api.providers.models import ProviderSearchResult, ProviderStream, ProviderSubtitle
 from moviebox_api.providers.registry import (
     DEFAULT_PROVIDER,
@@ -15,6 +16,7 @@ from moviebox_api.providers.vega_provider import ENV_VEGA_PROVIDER_KEY
 
 __all__ = [
     "BaseStreamProvider",
+    "CloudstreamProvider",
     "ProviderSearchResult",
     "ProviderStream",
     "ProviderSubtitle",
